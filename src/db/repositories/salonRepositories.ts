@@ -3361,31 +3361,90 @@ export class SalonRepositoryHub {
     return pub
   }
 
+  private static normalizeIdentifierText(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+  }
+
+  private static matchesAccountIdentifier(
+    account: SalonUserAccount,
+    rawIdentifier: string,
+  ): boolean {
+    const trimmed = rawIdentifier.trim()
+    if (!trimmed) return false
+
+    if (account.email.trim().toLowerCase() === trimmed.toLowerCase()) {
+      return true
+    }
+
+    const normInput = SalonRepositoryHub.normalizeIdentifierText(trimmed)
+    const normFullName = SalonRepositoryHub.normalizeIdentifierText(
+      account.fullName,
+    )
+    if (normInput.length >= 2 && normFullName === normInput) {
+      return true
+    }
+
+    const inputDigits = trimmed.replace(/\D+/g, '')
+    const accountDigits = (account.phone ?? '').replace(/\D+/g, '')
+    if (inputDigits.length >= 6 && accountDigits.length >= 6) {
+      if (
+        accountDigits === inputDigits ||
+        accountDigits.endsWith(inputDigits) ||
+        inputDigits.endsWith(accountDigits)
+      ) {
+        return true
+      }
+    }
+
+    return false
+  }
+
   public async authenticateLocalUserAccount(input: {
     email: string
     password: string
   }): Promise<PublicSalonUser> {
     await this.ensureInitialized()
-    const email = input.email.trim().toLowerCase()
-    const account = await this.database.users
-      .where('email')
-      .equals(email)
-      .first()
+    const identifier = input.email.trim()
+    if (!identifier || !input.password) {
+      throw new Error('Identifiant ou mot de passe incorrect.')
+    }
 
-    if (!account) {
-      throw new Error('Adresse e-mail ou mot de passe incorrect.')
+    const allAccounts = await this.database.users.toArray()
+    const candidates = allAccounts.filter((u) =>
+      SalonRepositoryHub.matchesAccountIdentifier(u, identifier),
+    )
+
+    if (candidates.length === 0) {
+      throw new Error('Identifiant ou mot de passe incorrect.')
     }
-    const ok = await verifyPasswordPBKDF2(input.password, account.passwordHash)
-    if (!ok) {
-      throw new Error('Adresse e-mail ou mot de passe incorrect.')
+
+    let matchedAccount: SalonUserAccount | null = null
+    for (const candidate of candidates) {
+      const ok = await verifyPasswordPBKDF2(
+        input.password,
+        candidate.passwordHash,
+      )
+      if (ok) {
+        matchedAccount = candidate
+        break
+      }
     }
-    if (!account.isActive) {
+
+    if (!matchedAccount) {
+      throw new Error('Identifiant ou mot de passe incorrect.')
+    }
+    if (!matchedAccount.isActive) {
       throw new Error('Ce compte a été désactivé par le Gérant.')
     }
 
     const nowIso = new Date().toISOString()
     const updated: SalonUserAccount = {
-      ...account,
+      ...matchedAccount,
       lastLoginAt: nowIso,
       updatedAt: nowIso,
     }

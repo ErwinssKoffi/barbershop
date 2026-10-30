@@ -327,32 +327,59 @@ export function MainLayout() {
             {initials}
           </div>
           {!collapsed && (
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div
-                style={{
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  color: '#f4f4f5',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {displayUserName}
+            <>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    color: '#f4f4f5',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {displayUserName}
+                </div>
+                <div
+                  style={{
+                    fontSize: '0.68rem',
+                    color: '#71717a',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {roleLabel} ·{' '}
+                  {cloudSync.syncEnabled ? 'Hybride Neon' : 'Mode local'}
+                </div>
               </div>
-              <div
-                style={{
-                  fontSize: '0.68rem',
-                  color: '#71717a',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {roleLabel} ·{' '}
-                {cloudSync.syncEnabled ? 'Hybride Neon' : 'Mode local'}
-              </div>
-            </div>
+              {auth.authEnforced && (
+                <button
+                  type="button"
+                  title="Changer de compte / Se déconnecter"
+                  aria-label="Changer de compte"
+                  onClick={() => {
+                    auth.logout()
+                    toast.success('Déconnecté — choisissez votre compte.')
+                    navigate('/login', { replace: true })
+                  }}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: '#a1a1aa',
+                    cursor: 'pointer',
+                    padding: 5,
+                    borderRadius: 6,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <LogOut size={15} />
+                </button>
+              )}
+            </>
           )}
         </div>
       </aside>

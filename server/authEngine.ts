@@ -320,6 +320,46 @@ export async function registerUserOnNeon(
   }
 }
 
+function normalizeLookupText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+}
+
+function matchesNeonAccountIdentifier(
+  account: SalonUserAccount,
+  rawIdentifier: string,
+): boolean {
+  const trimmed = rawIdentifier.trim()
+  if (!trimmed) return false
+
+  if (normalizeEmail(account.email) === normalizeEmail(trimmed)) {
+    return true
+  }
+
+  const normInput = normalizeLookupText(trimmed)
+  if (normInput.length >= 2 && normalizeLookupText(account.fullName) === normInput) {
+    return true
+  }
+
+  const inputDigits = trimmed.replace(/\D+/g, '')
+  const accountDigits = (account.phone ?? '').replace(/\D+/g, '')
+  if (inputDigits.length >= 6 && accountDigits.length >= 6) {
+    if (
+      accountDigits === inputDigits ||
+      accountDigits.endsWith(inputDigits) ||
+      inputDigits.endsWith(accountDigits)
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
 export async function loginUserOnNeon(
   pool: SqlPoolLike,
   input: { email: string; password: string },
@@ -329,14 +369,14 @@ export async function loginUserOnNeon(
   recordForCache: SalonUserAccount
   sessionToken: string
 }> {
-  const email = normalizeEmail(input.email ?? '')
+  const identifier = (input.email ?? '').trim()
   const password = input.password ?? ''
 
-  if (!email || !password) {
+  if (!identifier || !password) {
     throw new AuthApiError(
       400,
       'MISSING_CREDENTIALS',
-      'Veuillez saisir votre adresse e-mail et votre mot de passe.',
+      'Veuillez saisir votre identifiant (e-mail, nom ou téléphone) et votre mot de passe.',
     )
   }
 
@@ -345,15 +385,19 @@ export async function loginUserOnNeon(
   const res = await pool.query<{ payload_json: SalonUserAccount | string }>(
     'SELECT payload_json FROM salon_users ORDER BY created_at ASC',
   )
-  const account = res.rows
+  const candidates = res.rows
     .map((r) => parseAccountRow(r.payload_json))
-    .find((u) => normalizeEmail(u.email) === email)
+    .filter((u) => matchesNeonAccountIdentifier(u, identifier))
 
-  if (!account || !verifyPasswordNode(password, account.passwordHash)) {
+  const account = candidates.find((u) =>
+    verifyPasswordNode(password, u.passwordHash),
+  )
+
+  if (!account) {
     throw new AuthApiError(
       401,
       'INVALID_CREDENTIALS',
-      'Adresse e-mail ou mot de passe incorrect.',
+      'Identifiant ou mot de passe incorrect.',
     )
   }
 

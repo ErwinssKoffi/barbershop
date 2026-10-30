@@ -25,6 +25,7 @@ export interface AuthContextValue {
   hasAnyManager: boolean
   authMode: AuthMode
   currentUser: PublicSalonUser | null
+  localAccounts: PublicSalonUser[]
   sessionToken: string | null
   refreshAuthStatus: () => Promise<void>
   login: (params: LoginAccountParams) => Promise<PublicSalonUser>
@@ -66,6 +67,7 @@ const FALLBACK_AUTH_CONTEXT: AuthContextValue = {
   hasAnyManager: true,
   authMode: 'local_offline',
   currentUser: FALLBACK_MANAGER_USER,
+  localAccounts: [],
   sessionToken: null,
   refreshAuthStatus: async () => {},
   login: async () => FALLBACK_MANAGER_USER,

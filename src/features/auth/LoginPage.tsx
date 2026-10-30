@@ -1,15 +1,32 @@
-import { AlertTriangle, ArrowRight, Eye, EyeOff, Sparkles } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  Eye,
+  EyeOff,
+  Sparkles,
+} from 'lucide-react'
+import { useRef, useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/authContext'
+import type { PublicSalonUser } from '../../domain/models'
 import { useToast } from '../../hooks/toastContext'
 import { AuthLayout } from './AuthLayout'
 
+function getAccountInitials(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return 'SP'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+}
+
 export function LoginPage() {
-  const { authReady, currentUser, hasAnyManager, login } = useAuth()
+  const { authReady, currentUser, hasAnyManager, localAccounts, login } =
+    useAuth()
   const toast = useToast()
   const navigate = useNavigate()
   const location = useLocation()
+  const passwordInputRef = useRef<HTMLInputElement | null>(null)
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -23,6 +40,23 @@ export function LoginPage() {
 
   if (authReady && currentUser) {
     return <Navigate to={redirectTarget} replace />
+  }
+
+  const handlePickLocalAccount = (acc: PublicSalonUser) => {
+    setError(null)
+    setEmail(acc.fullName)
+    window.requestAnimationFrame(() => {
+      passwordInputRef.current?.focus()
+    })
+  }
+
+  const isAccountSelected = (acc: PublicSalonUser): boolean => {
+    const norm = email.trim().toLowerCase()
+    if (!norm) return false
+    return (
+      norm === acc.email.trim().toLowerCase() ||
+      norm === acc.fullName.trim().toLowerCase()
+    )
   }
 
   const handleSubmit = async (e: FormEvent) => {
@@ -47,9 +81,9 @@ export function LoginPage() {
   return (
     <AuthLayout
       variant="login"
-      maxWidth={370}
+      maxWidth={380}
       title="Connexion à votre espace"
-      subtitle="Connectez-vous pour accéder à votre caisse et au pilotage"
+      subtitle="Connectez-vous par nom complet, téléphone ou e-mail"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {authReady && !hasAnyManager && (
@@ -98,6 +132,113 @@ export function LoginPage() {
           </div>
         )}
 
+        {authReady && localAccounts.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div
+              style={{
+                fontSize: '0.73rem',
+                fontWeight: 650,
+                color: 'var(--text-muted)',
+              }}
+            >
+              Comptes enregistrés sur cet appareil
+            </div>
+            <div
+              role="list"
+              aria-label="Comptes enregistrés sur cet appareil"
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                maxHeight: 152,
+                overflowY: 'auto',
+              }}
+            >
+              {localAccounts.map((acc) => {
+                const selected = isAccountSelected(acc)
+                return (
+                  <button
+                    key={acc.id}
+                    type="button"
+                    onClick={() => handlePickLocalAccount(acc)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 11,
+                      border: selected
+                        ? '1.5px solid var(--accent-cta)'
+                        : '1px solid var(--border-subtle)',
+                      background: selected
+                        ? 'var(--accent-emerald-soft)'
+                        : 'var(--bg-surface-muted)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'border-color 0.15s ease, background 0.15s ease',
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: '999px',
+                        background: 'var(--accent-cta)',
+                        color: '#ffffff',
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {getAccountInitials(acc.fullName)}
+                    </span>
+                    <span style={{ minWidth: 0, flex: 1 }}>
+                      <span
+                        style={{
+                          display: 'block',
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          color: 'var(--text-primary)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {acc.fullName}
+                      </span>
+                      <span
+                        style={{
+                          display: 'block',
+                          fontSize: '0.71rem',
+                          color: 'var(--text-muted)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {acc.role === 'manager' ? 'Gérant' : 'Caissier'} ·{' '}
+                        {acc.email}
+                      </span>
+                    </span>
+                    {selected && (
+                      <Check
+                        size={15}
+                        style={{ color: 'var(--accent-cta)', flexShrink: 0 }}
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {error && (
           <div
             role="alert"
@@ -123,14 +264,14 @@ export function LoginPage() {
         >
           <div className="auth-soft-field">
             <label htmlFor="login-email" className="auth-soft-label">
-              Adresse e-mail
+              Adresse e-mail, nom ou téléphone
             </label>
             <input
               id="login-email"
-              type="email"
+              type="text"
               required
-              autoComplete="email"
-              placeholder="nom@domaine.com"
+              autoComplete="username"
+              placeholder="Nom complet, téléphone ou nom@domaine.com"
               className="auth-soft-input"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -142,6 +283,7 @@ export function LoginPage() {
               Mot de passe
             </label>
             <input
+              ref={passwordInputRef}
               id="login-password"
               type={showPassword ? 'text' : 'password'}
               required

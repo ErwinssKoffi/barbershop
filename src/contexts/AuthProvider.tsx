@@ -99,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<PublicSalonUser | null>(
     () => readPersistedAuth().user,
   )
+  const [localAccounts, setLocalAccounts] = useState<PublicSalonUser[]>([])
   const [sessionToken, setSessionToken] = useState<string | null>(
     () => readPersistedAuth().token,
   )
@@ -108,13 +109,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshAuthStatus = useCallback(async () => {
     purgeLegacyStoredPins()
-    const localHasManager = await syncWithRepo(async (repo) => {
-      const hasMgr = await repo.hasAnyManagerAccount()
-      if (hasMgr || currentUser) {
-        await repo.purgeLegacyMockData()
-      }
-      return hasMgr
-    })
+    const { hasMgr: localHasManager, accounts } = await syncWithRepo(
+      async (repo) => {
+        const [hasMgr, allUsers] = await Promise.all([
+          repo.hasAnyManagerAccount(),
+          repo.listUserAccounts(),
+        ])
+        if (hasMgr || currentUser) {
+          await repo.purgeLegacyMockData()
+        }
+        return {
+          hasMgr,
+          accounts: allUsers.filter((u) => u.isActive),
+        }
+      },
+    )
+    setLocalAccounts(accounts)
 
     let remoteHasManager = false
     let cloudReachable = false
@@ -192,7 +202,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           if (resp.ok && data.ok && data.user) {
-            await mutate(async (repo) => {
+            const refreshedAccounts = await mutate(async (repo) => {
               if (data.recordForCache) {
                 await repo.cacheRemoteUserAccount(data.recordForCache)
               }
@@ -208,8 +218,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 })
               }
               await repo.purgeLegacyMockData()
+              return (await repo.listUserAccounts()).filter((u) => u.isActive)
             })
             const nextToken = data.sessionToken ?? null
+            setLocalAccounts(refreshedAccounts)
             setCurrentUser(data.user)
             setSessionToken(nextToken)
             setHasAnyManager(true)
@@ -237,20 +249,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       // 2. Continuité locale Hors-Ligne (IndexedDB)
-      const localUser = await mutate(async (repo) => {
-        const created = await repo.registerLocalUserAccount({
-          fullName: params.fullName,
-          email: params.email,
-          phone: params.phone,
-          password: params.password,
-          role: params.role,
-          salonName: params.salonName,
-          callerIsAuthenticatedManager: currentUser?.role === 'manager',
+      const { created: localUser, accounts: updatedLocalAccounts } =
+        await mutate(async (repo) => {
+          const created = await repo.registerLocalUserAccount({
+            fullName: params.fullName,
+            email: params.email,
+            phone: params.phone,
+            password: params.password,
+            role: params.role,
+            salonName: params.salonName,
+            callerIsAuthenticatedManager: currentUser?.role === 'manager',
+          })
+          await repo.purgeLegacyMockData()
+          const accounts = (await repo.listUserAccounts()).filter(
+            (u) => u.isActive,
+          )
+          return { created, accounts }
         })
-        await repo.purgeLegacyMockData()
-        return created
-      })
 
+      setLocalAccounts(updatedLocalAccounts)
       setCurrentUser(localUser)
       setSessionToken(null)
       setHasAnyManager(true)
@@ -291,13 +308,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           if (resp.ok && data.ok && data.user) {
-            await syncWithRepo(async (repo) => {
+            const refreshedAccounts = await syncWithRepo(async (repo) => {
               if (data.recordForCache) {
                 await repo.cacheRemoteUserAccount(data.recordForCache)
               }
               await repo.purgeLegacyMockData()
+              return (await repo.listUserAccounts()).filter((u) => u.isActive)
             })
             const nextToken = data.sessionToken ?? null
+            setLocalAccounts(refreshedAccounts)
             setCurrentUser(data.user)
             setSessionToken(nextToken)
             setAuthMode('cloud_neon')
@@ -341,14 +360,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       // 2. Continuité locale Hors-Ligne (IndexedDB)
-      const localUser = await syncWithRepo(async (repo) => {
-        const authed = await repo.authenticateLocalUserAccount({
-          email: params.email,
-          password: params.password,
+      const { authed: localUser, accounts: nextLocalAccounts } =
+        await syncWithRepo(async (repo) => {
+          const authed = await repo.authenticateLocalUserAccount({
+            email: params.email,
+            password: params.password,
+          })
+          await repo.purgeLegacyMockData()
+          const accounts = (await repo.listUserAccounts()).filter(
+            (u) => u.isActive,
+          )
+          return { authed, accounts }
         })
-        await repo.purgeLegacyMockData()
-        return authed
-      })
+      setLocalAccounts(nextLocalAccounts)
       setCurrentUser(localUser)
       setSessionToken(null)
       setAuthMode('local_offline')
@@ -371,6 +395,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasAnyManager,
       authMode,
       currentUser,
+      localAccounts,
       sessionToken,
       refreshAuthStatus,
       login,
@@ -382,6 +407,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasAnyManager,
       authMode,
       currentUser,
+      localAccounts,
       sessionToken,
       refreshAuthStatus,
       login,

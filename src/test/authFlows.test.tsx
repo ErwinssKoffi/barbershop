@@ -479,4 +479,71 @@ describe('Inscription, Connexion Hybride & Contrôle d’accès par rôle (Géra
       ]),
     )
   })
+
+  it('affiche les comptes enregistrés sur l’appareil sur /login et permet la connexion par nom complet, téléphone ou e-mail', async () => {
+    const user = userEvent.setup()
+    const repo = new SalonRepositoryHub(
+      new SalonProDatabase(`AuthPickerTest_${crypto.randomUUID()}`),
+    )
+    await repo.ensureInitialized(false)
+
+    await repo.registerLocalUserAccount({
+      fullName: 'Billy Sess',
+      email: 'billy.sess@salon.ci',
+      phone: '+225 07 11 22 33 44',
+      password: 'MonSecret2026',
+      role: 'manager',
+    })
+
+    // Vérifier aussi la connexion par téléphone directement via le repository
+    const byPhone = await repo.authenticateLocalUserAccount({
+      email: '0711223344',
+      password: 'MonSecret2026',
+    })
+    expect(byPhone.fullName).toBe('Billy Sess')
+
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+
+    const view = render(
+      <ToastProvider>
+        <SalonStoreProvider repository={repo}>
+          <MemoryRouter initialEntries={['/login']}>
+            <AuthProvider>
+              <AppRoutes />
+            </AuthProvider>
+          </MemoryRouter>
+        </SalonStoreProvider>
+      </ToastProvider>,
+    )
+
+    // Le sélecteur affiche automatiquement le compte local enregistré sur l'appareil
+    expect(
+      await screen.findByText(/Comptes enregistrés sur cet appareil/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Billy Sess')).toBeInTheDocument()
+
+    // Connexion en saisissant directement le nom en minuscules "billy sess" (sans @)
+    const idInput = screen.getByLabelText(/Adresse e-mail, nom ou téléphone/i)
+    await user.clear(idInput)
+    await user.type(idInput, 'billy sess')
+    await user.type(screen.getByLabelText(/^Mot de passe$/i), 'MonSecret2026')
+    await user.click(screen.getByRole('button', { name: /Se connecter/i }))
+
+    expect(
+      await screen.findByRole('heading', { name: /Tableau de bord/i }),
+    ).toBeInTheDocument()
+
+    // Le bouton "Changer de compte" dans le pied de barre latérale permet de revenir en 1 clic au sélecteur
+    await user.click(screen.getByRole('button', { name: /Changer de compte/i }))
+    const accountCard = await screen.findByRole('button', {
+      name: /Billy Sess/i,
+    })
+    await user.click(accountCard)
+    expect(
+      screen.getByLabelText(/Adresse e-mail, nom ou téléphone/i),
+    ).toHaveValue('Billy Sess')
+
+    view.unmount()
+  })
 })
