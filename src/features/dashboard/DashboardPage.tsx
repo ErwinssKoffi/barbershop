@@ -396,6 +396,7 @@ export function DashboardPage() {
         advances: state.advances,
         bonuses: state.bonuses,
         salaryPayments: state.salaryPayments,
+        servicesCatalog: state.services,
       }),
     )
     return buildDashboardAlerts({
@@ -422,9 +423,10 @@ export function DashboardPage() {
     state.products,
     state.budgets,
     state.settings.lastBackupExportedAt,
-    state.recurringExpenses,
-    periodData.curExps,
-  ])
+      state.recurringExpenses,
+      state.services,
+      periodData.curExps,
+    ])
 
   const handleQuickBackupExport = async () => {
     try {

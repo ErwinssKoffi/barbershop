@@ -10,6 +10,9 @@ export function QuickActionProvider({ children }: { children: ReactNode }) {
   const [prefillServiceId, setPrefillServiceId] = useState<string | undefined>(
     undefined,
   )
+  const [prefillVariantId, setPrefillVariantId] = useState<string | undefined>(
+    undefined,
+  )
   const [prefillProductId, setPrefillProductId] = useState<string | undefined>(
     undefined,
   )
@@ -18,8 +21,13 @@ export function QuickActionProvider({ children }: { children: ReactNode }) {
   const [receiptTarget, setReceiptTarget] = useState<string | null>(null)
 
   const openCheckoutTicket = useCallback(
-    (prefill?: { serviceId?: string; productId?: string }) => {
+    (prefill?: {
+      serviceId?: string
+      variantId?: string
+      productId?: string
+    }) => {
       setPrefillServiceId(prefill?.serviceId)
+      setPrefillVariantId(prefill?.variantId)
       setPrefillProductId(prefill?.productId)
       setTicketSessionKey((k) => k + 1)
       setTicketModalOpen(true)
@@ -52,6 +60,7 @@ export function QuickActionProvider({ children }: { children: ReactNode }) {
           key={ticketSessionKey}
           open={ticketModalOpen}
           initialServiceId={prefillServiceId}
+          initialVariantId={prefillVariantId}
           initialProductId={prefillProductId}
           onClose={() => setTicketModalOpen(false)}
           onTicketCreated={(receiptNumber) => setReceiptTarget(receiptNumber)}

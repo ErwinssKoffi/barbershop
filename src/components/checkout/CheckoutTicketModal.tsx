@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Lock,
   Package,
   Plus,
   Receipt,
@@ -20,8 +21,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { useAuth } from '../../contexts/authContext'
 import { useCashSession } from '../../contexts/cashSessionContext'
 import type { CheckoutTicketLineInput } from '../../db/repositories/salonRepositories'
+import type { ServiceCatalogItem } from '../../domain/models'
 import { useSalonStore } from '../../hooks/salonStoreContext'
 import { useToast } from '../../hooks/toastContext'
 import { formatFCFA, toIntFCFA, todayISO } from '../../utils/format'
@@ -30,12 +33,29 @@ interface DraftLine {
   key: string
   kind: 'service' | 'product'
   serviceId: string
+  serviceVariantId: string
   productId: string
   label: string
   categoryCode: string
   employeeId: string
   quantity: string
   unitPrice: string
+}
+
+function resolveServiceRevenueCategory(srv: ServiceCatalogItem): string {
+  if (
+    srv.categoryCode === 'tresses_nattes' ||
+    srv.categoryCode === 'meches_perruques'
+  ) {
+    return 'braiding_weaving'
+  }
+  if (
+    srv.categoryCode === 'coloration' ||
+    srv.categoryCode === 'soins_brushing'
+  ) {
+    return 'care_coloring'
+  }
+  return 'hair_service'
 }
 
 interface DraftConsumable {
@@ -53,6 +73,7 @@ interface DraftSplit {
 interface CheckoutTicketModalProps {
   open: boolean
   initialServiceId?: string
+  initialVariantId?: string
   initialProductId?: string
   onClose: () => void
   onTicketCreated?: (receiptNumber: string) => void
@@ -65,11 +86,14 @@ function makeLineKey(): string {
 export function CheckoutTicketModal({
   open,
   initialServiceId,
+  initialVariantId,
   initialProductId,
   onClose,
   onTicketCreated,
 }: CheckoutTicketModalProps) {
   const { state, mutate } = useSalonStore()
+  const { currentUser } = useAuth()
+  const isCashier = currentUser?.role === 'cashier'
   const { openSession, openQuickCashModal } = useCashSession()
   const toast = useToast()
 
@@ -117,6 +141,7 @@ export function CheckoutTicketModal({
           key: makeLineKey(),
           kind: 'product',
           serviceId: '',
+          serviceVariantId: '',
           productId: prod?.id ?? '',
           label: prod?.name ?? '',
           categoryCode: 'product_sale',
@@ -129,22 +154,53 @@ export function CheckoutTicketModal({
     const srv = initialServiceId
       ? state.services.find((s) => s.id === initialServiceId)
       : undefined
+    const matchedVariant =
+      srv && initialVariantId
+        ? srv.variants?.find((v) => v.id === initialVariantId)
+        : undefined
     return [
       {
         key: makeLineKey(),
         kind: 'service',
         serviceId: srv?.id ?? '',
+        serviceVariantId: matchedVariant?.id ?? '',
         productId: '',
-        label: srv?.name ?? '',
-        categoryCode: 'hair_service',
+        label: matchedVariant
+          ? `${srv!.name} — ${matchedVariant.label}`
+          : (srv?.name ?? ''),
+        categoryCode: srv ? resolveServiceRevenueCategory(srv) : 'hair_service',
         employeeId: '',
         quantity: '1',
-        unitPrice: srv ? String(srv.referencePrice) : '',
+        unitPrice: matchedVariant
+          ? String(matchedVariant.price)
+          : srv
+            ? String(srv.referencePrice)
+            : '',
       },
     ]
   })
 
-  const [consumables, setConsumables] = useState<DraftConsumable[]>([])
+  const [consumables, setConsumables] = useState<DraftConsumable[]>(() => {
+    if (!initialServiceId) return []
+    const srv = state.services.find((s) => s.id === initialServiceId)
+    if (!srv?.defaultConsumables || srv.defaultConsumables.length === 0) {
+      return []
+    }
+    const seeded: DraftConsumable[] = []
+    for (const defCons of srv.defaultConsumables) {
+      const stockProd = consumableProducts.find(
+        (p) => p.id === defCons.productId,
+      )
+      if (stockProd && stockProd.quantity > 0) {
+        seeded.push({
+          key: makeLineKey(),
+          productId: stockProd.id,
+          quantity: String(Math.min(stockProd.quantity, defCons.quantity)),
+        })
+      }
+    }
+    return seeded
+  })
   const [paymentMode, setPaymentMode] = useState<'single' | 'split'>('single')
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [splits, setSplits] = useState<DraftSplit[]>([
@@ -195,26 +251,69 @@ export function CheckoutTicketModal({
     )
   }
 
+  const mergeServiceDefaultConsumables = (srv: ServiceCatalogItem) => {
+    if (!srv.defaultConsumables || srv.defaultConsumables.length === 0) return
+    setConsumables((prev) => {
+      const next = [...prev]
+      for (const defCons of srv.defaultConsumables ?? []) {
+        const stockProd = consumableProducts.find(
+          (p) => p.id === defCons.productId,
+        )
+        if (!stockProd || stockProd.quantity <= 0) continue
+        const already = next.find((item) => item.productId === stockProd.id)
+        if (!already) {
+          next.push({
+            key: makeLineKey(),
+            productId: stockProd.id,
+            quantity: String(Math.min(stockProd.quantity, defCons.quantity)),
+          })
+        }
+      }
+      return next
+    })
+  }
+
   const handleSelectService = (key: string, srvId: string) => {
     if (srvId === '__manual__') {
-      updateLine(key, { serviceId: '' })
+      updateLine(key, {
+        serviceId: '',
+        serviceVariantId: '',
+        ...(isCashier ? { label: '', unitPrice: '' } : {}),
+      })
       return
     }
     const srv = activeServices.find((s) => s.id === srvId)
     if (!srv) return
-    const autoCategory =
-      srv.categoryCode === 'tresses_nattes' ||
-      srv.categoryCode === 'meches_perruques'
-        ? 'braiding_weaving'
-        : srv.categoryCode === 'coloration' ||
-            srv.categoryCode === 'soins_brushing'
-          ? 'care_coloring'
-          : 'hair_service'
+    const autoCategory = resolveServiceRevenueCategory(srv)
     updateLine(key, {
       serviceId: srv.id,
+      serviceVariantId: '',
       label: srv.name,
       categoryCode: autoCategory,
       unitPrice: String(srv.referencePrice),
+    })
+    mergeServiceDefaultConsumables(srv)
+  }
+
+  const handleSelectVariant = (
+    key: string,
+    srv: ServiceCatalogItem,
+    variantId: string,
+  ) => {
+    if (variantId === '__base__') {
+      updateLine(key, {
+        serviceVariantId: '',
+        label: srv.name,
+        unitPrice: String(srv.referencePrice),
+      })
+      return
+    }
+    const variant = srv.variants?.find((v) => v.id === variantId)
+    if (!variant) return
+    updateLine(key, {
+      serviceVariantId: variant.id,
+      label: `${srv.name} — ${variant.label}`,
+      unitPrice: String(variant.price),
     })
   }
 
@@ -223,6 +322,7 @@ export function CheckoutTicketModal({
     if (!prod) return
     updateLine(key, {
       productId: prod.id,
+      serviceVariantId: '',
       label: prod.name,
       categoryCode: 'product_sale',
       unitPrice: String(prod.salePrice ?? prod.costPrice),
@@ -236,6 +336,7 @@ export function CheckoutTicketModal({
         key: makeLineKey(),
         kind,
         serviceId: '',
+        serviceVariantId: '',
         productId: '',
         label: '',
         categoryCode: kind === 'product' ? 'product_sale' : 'hair_service',
@@ -257,16 +358,28 @@ export function CheckoutTicketModal({
       const nowTime = new Date().toISOString().slice(11)
       const isoDate = `${date}T${nowTime}`
 
-      const preparedLines: CheckoutTicketLineInput[] = lines.map((ln) => ({
-        kind: ln.kind,
-        serviceId: ln.kind === 'service' ? ln.serviceId || undefined : undefined,
-        productId: ln.kind === 'product' ? ln.productId || undefined : undefined,
-        label: ln.label,
-        categoryCode: ln.categoryCode,
-        employeeId: ln.employeeId || undefined,
-        quantity: Math.max(1, Math.round(Number(ln.quantity || 1))),
-        unitPrice: toIntFCFA(Number(ln.unitPrice || 0)),
-      }))
+      const preparedLines: CheckoutTicketLineInput[] = lines.map((ln) => {
+        const srv =
+          ln.kind === 'service' && ln.serviceId
+            ? state.services.find((s) => s.id === ln.serviceId)
+            : undefined
+        const matchedVariant =
+          srv && ln.serviceVariantId
+            ? srv.variants?.find((v) => v.id === ln.serviceVariantId)
+            : undefined
+        return {
+          kind: ln.kind,
+          serviceId: ln.kind === 'service' ? ln.serviceId || undefined : undefined,
+          serviceVariantId: matchedVariant?.id,
+          serviceVariantLabel: matchedVariant?.label,
+          productId: ln.kind === 'product' ? ln.productId || undefined : undefined,
+          label: ln.label,
+          categoryCode: ln.categoryCode,
+          employeeId: ln.employeeId || undefined,
+          quantity: Math.max(1, Math.round(Number(ln.quantity || 1))),
+          unitPrice: toIntFCFA(Number(ln.unitPrice || 0)),
+        }
+      })
 
       const preparedConsumables = consumables
         .filter((c) => c.productId && Number(c.quantity) > 0)
@@ -298,6 +411,7 @@ export function CheckoutTicketModal({
           paymentSplits: preparedSplits,
           amountTendered: amountTendered ? Number(amountTendered) : undefined,
           note,
+          callerRole: currentUser?.role,
         }),
       )
 
@@ -413,178 +527,243 @@ export function CheckoutTicketModal({
               </div>
             </div>
 
-            {lines.map((ln, idx) => (
-              <div
-                key={ln.key}
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  border: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-surface-muted)',
-                }}
-                className="space-y-2.5"
-              >
-                <div className="flex items-center justify-between">
-                  <Badge
-                    variant={ln.kind === 'service' ? 'default' : 'info-light'}
-                    size="sm"
-                  >
-                    {ln.kind === 'service'
-                      ? `Ligne ${idx + 1} · Prestation`
-                      : `Ligne ${idx + 1} · Produit de revente`}
-                  </Badge>
-                  {lines.length > 1 && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      style={{ color: 'var(--color-danger)' }}
-                      aria-label="Retirer la ligne"
-                      onClick={() => removeLine(ln.key)}
-                    >
-                      <Trash2 size={14} />
-                    </Button>
-                  )}
-                </div>
+            {lines.map((ln, idx) => {
+              const selectedService =
+                ln.kind === 'service' && ln.serviceId
+                  ? state.services.find((s) => s.id === ln.serviceId)
+                  : undefined
+              const hasVariants = Boolean(
+                selectedService?.variants && selectedService.variants.length > 0,
+              )
+              const isPriceLockedForCashier = Boolean(
+                isCashier && selectedService?.priceLocked,
+              )
 
-                <div className="grid grid-cols-2 gap-3">
-                  {ln.kind === 'service' ? (
-                    <Field>
-                      <FieldLabel>Catalogue prestations</FieldLabel>
-                      <Select
-                        value={ln.serviceId || '__manual__'}
-                        onValueChange={(v) => handleSelectService(ln.key, v)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Choisir ou saisie libre…" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__manual__">
-                            Saisie libre personnalisée
-                          </SelectItem>
-                          {activeServices.map((s) => (
-                            <SelectItem key={s.id} value={s.id}>
-                              {s.name} ({formatFCFA(s.referencePrice)})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  ) : (
-                    <Field>
-                      <FieldLabel>Produit en stock</FieldLabel>
-                      <Select
-                        value={ln.productId}
-                        onValueChange={(v) => handleSelectProduct(ln.key, v)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Sélectionner un produit…" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {resaleProducts.map((p) => (
-                            <SelectItem key={p.id} value={p.id}>
-                              {p.name} ({p.quantity} {p.unit} dispo ·{' '}
-                              {formatFCFA(p.salePrice ?? p.costPrice)})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  )}
-
-                  <Field>
-                    <FieldLabel>Coiffeur / Barbier</FieldLabel>
-                    <Select
-                      value={ln.employeeId || '__none__'}
-                      onValueChange={(v) =>
-                        updateLine(ln.key, {
-                          employeeId: v === '__none__' ? '' : v,
-                        })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">Non attribué</SelectItem>
-                        {activeEmployees.map((emp) => (
-                          <SelectItem key={emp.id} value={emp.id}>
-                            {emp.fullName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-
+              return (
                 <div
+                  key={ln.key}
                   style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1.8fr 1fr 0.7fr 1fr',
-                    gap: 8,
+                    padding: 12,
+                    borderRadius: 10,
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--bg-surface-muted)',
                   }}
+                  className="space-y-2.5"
                 >
-                  <Field>
-                    <FieldLabel>Libellé</FieldLabel>
-                    <Input
-                      type="text"
-                      required
-                      placeholder="Ex. Coupe + Barbe"
-                      value={ln.label}
-                      onChange={(e) =>
-                        updateLine(ln.key, { label: e.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field>
-                    <FieldLabel>Catégorie</FieldLabel>
-                    <Select
-                      value={ln.categoryCode}
-                      onValueChange={(v) =>
-                        updateLine(ln.key, { categoryCode: v })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {revenueCategories.map((c) => (
-                          <SelectItem key={c.code} value={c.code}>
-                            {c.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field>
-                    <FieldLabel>Qté</FieldLabel>
-                    <Input
-                      type="number"
-                      min={1}
-                      step={1}
-                      required
-                      value={ln.quantity}
-                      onChange={(e) =>
-                        updateLine(ln.key, { quantity: e.target.value })
-                      }
-                    />
-                  </Field>
-                  <Field>
-                    <FieldLabel>Prix unit. (FCFA)</FieldLabel>
-                    <Input
-                      type="number"
-                      min={1}
-                      step={1}
-                      required
-                      value={ln.unitPrice}
-                      onChange={(e) =>
-                        updateLine(ln.key, { unitPrice: e.target.value })
-                      }
-                    />
-                  </Field>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant={ln.kind === 'service' ? 'default' : 'info-light'}
+                        size="sm"
+                      >
+                        {ln.kind === 'service'
+                          ? `Ligne ${idx + 1} · Prestation`
+                          : `Ligne ${idx + 1} · Produit de revente`}
+                      </Badge>
+                      {selectedService?.priceLocked && (
+                        <Badge variant="secondary" size="sm">
+                          <Lock className="size-3" aria-hidden="true" />
+                          Tarif fixe
+                        </Badge>
+                      )}
+                    </div>
+                    {lines.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        style={{ color: 'var(--color-danger)' }}
+                        aria-label="Retirer la ligne"
+                        onClick={() => removeLine(ln.key)}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    )}
+                  </div>
+
+                  <div
+                    className={
+                      hasVariants
+                        ? 'grid grid-cols-1 gap-3 sm:grid-cols-3'
+                        : 'grid grid-cols-2 gap-3'
+                    }
+                  >
+                    {ln.kind === 'service' ? (
+                      <Field>
+                        <FieldLabel>Catalogue prestations</FieldLabel>
+                        <Select
+                          value={ln.serviceId || '__manual__'}
+                          onValueChange={(v) => handleSelectService(ln.key, v)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choisir ou saisie libre…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__manual__">
+                              Saisie libre personnalisée
+                            </SelectItem>
+                            {activeServices.map((s) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name} ({formatFCFA(s.referencePrice)})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                    ) : (
+                      <Field>
+                        <FieldLabel>Produit en stock</FieldLabel>
+                        <Select
+                          value={ln.productId}
+                          onValueChange={(v) => handleSelectProduct(ln.key, v)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Sélectionner un produit…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {resaleProducts.map((p) => (
+                              <SelectItem key={p.id} value={p.id}>
+                                {p.name} ({p.quantity} {p.unit} dispo ·{' '}
+                                {formatFCFA(p.salePrice ?? p.costPrice)})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                    )}
+
+                    {hasVariants && selectedService && (
+                      <Field>
+                        <FieldLabel>Variante tarifaire</FieldLabel>
+                        <Select
+                          value={ln.serviceVariantId || '__base__'}
+                          onValueChange={(v) =>
+                            handleSelectVariant(ln.key, selectedService, v)
+                          }
+                        >
+                          <SelectTrigger aria-label="Variante tarifaire">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__base__">
+                              Standard ({formatFCFA(selectedService.referencePrice)})
+                            </SelectItem>
+                            {selectedService.variants!.map((v) => (
+                              <SelectItem key={v.id} value={v.id}>
+                                {v.label} ({formatFCFA(v.price)})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                    )}
+
+                    <Field>
+                      <FieldLabel>Coiffeur / Barbier</FieldLabel>
+                      <Select
+                        value={ln.employeeId || '__none__'}
+                        onValueChange={(v) =>
+                          updateLine(ln.key, {
+                            employeeId: v === '__none__' ? '' : v,
+                          })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">Non attribué</SelectItem>
+                          {activeEmployees.map((emp) => (
+                            <SelectItem key={emp.id} value={emp.id}>
+                              {emp.fullName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1.8fr 1fr 0.7fr 1fr',
+                      gap: 8,
+                    }}
+                  >
+                    <Field>
+                      <FieldLabel>Libellé</FieldLabel>
+                      <Input
+                        type="text"
+                        required
+                        placeholder="Ex. Coupe + Barbe"
+                        value={ln.label}
+                        onChange={(e) =>
+                          updateLine(ln.key, { label: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel>Catégorie</FieldLabel>
+                      <Select
+                        value={ln.categoryCode}
+                        onValueChange={(v) =>
+                          updateLine(ln.key, { categoryCode: v })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {revenueCategories.map((c) => (
+                            <SelectItem key={c.code} value={c.code}>
+                              {c.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field>
+                      <FieldLabel>Qté</FieldLabel>
+                      <Input
+                        type="number"
+                        min={1}
+                        step={1}
+                        required
+                        value={ln.quantity}
+                        onChange={(e) =>
+                          updateLine(ln.key, { quantity: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel>Prix unit. (FCFA)</FieldLabel>
+                      <Input
+                        type="number"
+                        min={1}
+                        step={1}
+                        required
+                        readOnly={isPriceLockedForCashier}
+                        title={
+                          isPriceLockedForCashier
+                            ? 'Tarif fixe verrouillé par le Gérant'
+                            : undefined
+                        }
+                        style={
+                          isPriceLockedForCashier
+                            ? { opacity: 0.78, cursor: 'not-allowed' }
+                            : undefined
+                        }
+                        value={ln.unitPrice}
+                        onChange={(e) => {
+                          if (isPriceLockedForCashier) return
+                          updateLine(ln.key, { unitPrice: e.target.value })
+                        }}
+                      />
+                    </Field>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           {/* Consommables optionnels utilisés en cabine */}

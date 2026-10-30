@@ -34,6 +34,8 @@ export interface SalonInfo {
 
 export type ReceiptFormat = 'thermal_80mm' | 'a5_sheet'
 
+export type ServiceConfigMode = 'simple' | 'pricing_variants' | 'full'
+
 export interface AppSettings {
   id: 'default'
   theme: 'light' | 'dark'
@@ -42,6 +44,7 @@ export interface AppSettings {
   printCompact: boolean
   receiptFormat?: ReceiptFormat
   receiptFooterNote?: string
+  serviceConfigMode?: ServiceConfigMode
   lastBackupExportedAt?: string
   dataHygieneVersion?: number
   mockPurgeCompletedAt?: string
@@ -82,6 +85,25 @@ export interface CategoryItem {
   updatedAt: string
 }
 
+export interface ServicePriceVariant {
+  id: string
+  label: string
+  price: number
+  durationMinutes?: number
+}
+
+export interface ServiceDefaultConsumable {
+  productId: string
+  quantity: number
+}
+
+export type ServiceCommissionMode = 'rate' | 'fixed'
+
+export interface ServiceCommissionOverride {
+  mode: ServiceCommissionMode
+  value: number
+}
+
 export interface ServiceCatalogItem {
   id: string
   name: string
@@ -89,6 +111,10 @@ export interface ServiceCatalogItem {
   referencePrice: number
   description: string
   durationMinutes?: number
+  priceLocked?: boolean
+  variants?: ServicePriceVariant[]
+  defaultConsumables?: ServiceDefaultConsumable[]
+  commissionOverride?: ServiceCommissionOverride
   isActive: boolean
   createdAt: string
   updatedAt: string
@@ -140,6 +166,8 @@ export interface RevenueEntry {
   label: string
   categoryCode: string
   serviceId?: string
+  serviceVariantId?: string
+  serviceVariantLabel?: string
   productId?: string
   employeeId?: string
   quantity?: number

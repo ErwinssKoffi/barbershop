@@ -90,11 +90,11 @@ export function EmployeesPage() {
     for (const emp of state.employees) {
       map.set(
         emp.id,
-        calculateEmployeePerformanceSummary(emp, periodRevenues),
+        calculateEmployeePerformanceSummary(emp, periodRevenues, state.services),
       )
     }
     return map
-  }, [state.employees, periodRevenues])
+  }, [state.employees, periodRevenues, state.services])
 
   const filteredEmployees = useMemo(() => {
     const q = search.trim().toLowerCase()

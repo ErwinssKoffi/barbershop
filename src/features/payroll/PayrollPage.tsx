@@ -75,6 +75,7 @@ export function PayrollPage() {
           advances: state.advances,
           bonuses: state.bonuses,
           salaryPayments: state.salaryPayments,
+          servicesCatalog: state.services,
         }),
       )
   }, [
@@ -84,6 +85,7 @@ export function PayrollPage() {
     state.advances,
     state.bonuses,
     state.salaryPayments,
+    state.services,
   ])
 
   const totals = useMemo(() => {

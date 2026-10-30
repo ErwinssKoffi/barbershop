@@ -3,6 +3,7 @@ import { createContext, useContext } from 'react'
 export interface QuickActionContextValue {
   openCheckoutTicket: (prefill?: {
     serviceId?: string
+    variantId?: string
     productId?: string
   }) => void
   openQuickExpense: () => void

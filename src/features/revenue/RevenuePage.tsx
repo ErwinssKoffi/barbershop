@@ -37,6 +37,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { useAuth } from '../../contexts/authContext'
 import { useCashSession } from '../../contexts/cashSessionContext'
 import { usePeriodFilter } from '../../contexts/periodFilterContext'
 import { useQuickAction } from '../../contexts/quickActionContext'
@@ -56,6 +57,8 @@ import {
 
 export function RevenuePage() {
   const { state, categoryLabel, mutate } = useSalonStore()
+  const { currentUser } = useAuth()
+  const isCashier = currentUser?.role === 'cashier'
   const {
     preset,
     customStart,
@@ -141,6 +144,7 @@ export function RevenuePage() {
   const [label, setLabel] = useState('')
   const [categoryCode, setCategoryCode] = useState('hair_service')
   const [serviceId, setServiceId] = useState('')
+  const [serviceVariantId, setServiceVariantId] = useState('')
   const [productId, setProductId] = useState('')
   const [employeeId, setEmployeeId] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
@@ -157,6 +161,7 @@ export function RevenuePage() {
     setLabel('')
     setCategoryCode(revenueCategories[0]?.code ?? 'hair_service')
     setServiceId('')
+    setServiceVariantId('')
     setProductId('')
     setEmployeeId('')
     setPaymentMethod('cash')
@@ -172,6 +177,7 @@ export function RevenuePage() {
     setLabel(rev.label)
     setCategoryCode(rev.categoryCode)
     setServiceId(rev.serviceId ?? '')
+    setServiceVariantId(rev.serviceVariantId ?? '')
     setProductId(rev.productId ?? '')
     setEmployeeId(rev.employeeId ?? '')
     setPaymentMethod(rev.paymentMethod)
@@ -181,12 +187,34 @@ export function RevenuePage() {
     setFormOpen(true)
   }
 
+  const selectedServiceObj = useMemo(
+    () => (serviceId ? state.services.find((s) => s.id === serviceId) : undefined),
+    [serviceId, state.services],
+  )
+  const isRevPriceLocked = Boolean(isCashier && selectedServiceObj?.priceLocked)
+
   const handleSelectService = (sid: string) => {
     setServiceId(sid)
+    setServiceVariantId('')
     const found = state.services.find((s) => s.id === sid)
     if (found) {
-      if (!label.trim()) setLabel(found.name)
+      setLabel(found.name)
       setAmount(String(found.referencePrice))
+    }
+  }
+
+  const handleSelectServiceVariant = (vid: string) => {
+    setServiceVariantId(vid)
+    if (!selectedServiceObj) return
+    if (!vid) {
+      setLabel(selectedServiceObj.name)
+      setAmount(String(selectedServiceObj.referencePrice))
+      return
+    }
+    const foundVar = selectedServiceObj.variants?.find((v) => v.id === vid)
+    if (foundVar) {
+      setLabel(`${selectedServiceObj.name} — ${foundVar.label}`)
+      setAmount(String(foundVar.price))
     }
   }
 
@@ -221,17 +249,24 @@ export function RevenuePage() {
         )
         toast.success('Recette modifiée avec trace dans le journal.')
       } else {
+        const matchedVar =
+          selectedServiceObj && serviceVariantId
+            ? selectedServiceObj.variants?.find((v) => v.id === serviceVariantId)
+            : undefined
         await mutate((repo) =>
           repo.addRevenue({
             date: isoDate,
             label,
             categoryCode,
             serviceId: serviceId || undefined,
+            serviceVariantId: matchedVar?.id,
+            serviceVariantLabel: matchedVar?.label,
             productId: productId || undefined,
             employeeId: employeeId || undefined,
             paymentMethod,
             amount: Number(amount),
             note,
+            callerRole: currentUser?.role,
           }),
         )
         toast.success('Recette enregistrée.')
@@ -785,6 +820,35 @@ export function RevenuePage() {
                 </Select>
               </Field>
 
+              {selectedServiceObj?.variants &&
+                selectedServiceObj.variants.length > 0 && (
+                  <Field>
+                    <FieldLabel htmlFor="f-rev-var">
+                      Variante tarifaire
+                    </FieldLabel>
+                    <Select
+                      value={serviceVariantId || '__base__'}
+                      onValueChange={(v) =>
+                        handleSelectServiceVariant(v === '__base__' ? '' : v)
+                      }
+                    >
+                      <SelectTrigger id="f-rev-var">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__base__">
+                          Standard ({formatFCFA(selectedServiceObj.referencePrice)})
+                        </SelectItem>
+                        {selectedServiceObj.variants.map((v) => (
+                          <SelectItem key={v.id} value={v.id}>
+                            {`${v.label} (${formatFCFA(v.price)})`}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                )}
+
               <Field>
                 <FieldLabel htmlFor="f-rev-prod">
                   Produit vendu (optionnel — décrémente le stock)
@@ -877,6 +941,7 @@ export function RevenuePage() {
               <Field>
                 <FieldLabel htmlFor="f-rev-amount">
                   Montant encaissé (FCFA)
+                  {isRevPriceLocked ? ' · Tarif fixe' : ''}
                 </FieldLabel>
                 <Input
                   id="f-rev-amount"
@@ -884,8 +949,12 @@ export function RevenuePage() {
                   min={1}
                   step={1}
                   required
+                  readOnly={isRevPriceLocked}
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={(e) => {
+                    if (isRevPriceLocked) return
+                    setAmount(e.target.value)
+                  }}
                 />
               </Field>
               <Field>

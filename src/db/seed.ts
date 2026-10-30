@@ -27,6 +27,7 @@ export function buildDefaultSettings(
     printCompact: false,
     receiptFormat: 'thermal_80mm',
     receiptFooterNote: 'Merci de votre visite et de votre fidélité !',
+    serviceConfigMode: 'simple',
     updatedAt: nowIso,
   }
 }

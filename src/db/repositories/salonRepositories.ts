@@ -31,6 +31,9 @@ import type {
   SalonInfo,
   SalonUserAccount,
   ServiceCatalogItem,
+  ServiceCommissionOverride,
+  ServiceDefaultConsumable,
+  ServicePriceVariant,
   StockMovement,
   StockMovementType,
   SyncTombstoneEntityType,
@@ -132,6 +135,8 @@ export interface FullSalonState {
 export interface CheckoutTicketLineInput {
   kind: 'service' | 'product'
   serviceId?: string
+  serviceVariantId?: string
+  serviceVariantLabel?: string
   productId?: string
   label: string
   categoryCode: string
@@ -155,6 +160,7 @@ export interface CheckoutTicketInput {
   amountTendered?: number
   reference?: string
   note?: string
+  callerRole?: UserRole
 }
 
 export interface CheckoutTicketResult {
@@ -837,6 +843,7 @@ export class SalonRepositoryHub {
     return this.database.transaction(
       'rw',
       [
+        this.database.services,
         this.database.revenues,
         this.database.products,
         this.database.stockMovements,
@@ -847,6 +854,28 @@ export class SalonRepositoryHub {
         const nowIso = new Date().toISOString()
         const ticketId = makeId('tkt')
         const receiptNumber = await this.generateReceiptNumber(input.date)
+
+        // 0. Contrôle RBAC sur les prestations à tarif fixe verrouillé lorsque l'opérateur est Caissier
+        if (input.callerRole === 'cashier') {
+          for (const ln of normalizedLines) {
+            if (ln.kind === 'service' && ln.serviceId) {
+              const srv = await this.database.services.get(ln.serviceId)
+              if (srv?.priceLocked) {
+                const matchedVariant = ln.serviceVariantId
+                  ? srv.variants?.find((v) => v.id === ln.serviceVariantId)
+                  : undefined
+                const expectedPrice = matchedVariant
+                  ? toIntFCFA(matchedVariant.price)
+                  : toIntFCFA(srv.referencePrice)
+                if (ln.unitPrice !== expectedPrice) {
+                  throw new Error(
+                    `Le tarif de « ${srv.name} » est verrouillé à ${expectedPrice.toLocaleString('fr-FR')} FCFA par le Gérant.`,
+                  )
+                }
+              }
+            }
+          }
+        }
 
         // 1. Vérifier la disponibilité du stock pour tous les produits vendus et consommables
         const requiredStock = new Map<string, number>()
@@ -1032,6 +1061,8 @@ export class SalonRepositoryHub {
                 : ln.label.trim(),
             categoryCode: ln.categoryCode,
             serviceId: ln.serviceId || undefined,
+            serviceVariantId: ln.serviceVariantId || undefined,
+            serviceVariantLabel: ln.serviceVariantLabel || undefined,
             productId: ln.productId || undefined,
             employeeId: ln.employeeId || undefined,
             quantity: ln.quantity,
@@ -1085,6 +1116,8 @@ export class SalonRepositoryHub {
     label: string
     categoryCode: string
     serviceId?: string
+    serviceVariantId?: string
+    serviceVariantLabel?: string
     productId?: string
     employeeId?: string
     quantity?: number
@@ -1094,6 +1127,7 @@ export class SalonRepositoryHub {
     reference?: string
     note?: string
     sourceModule?: RevenueEntry['sourceModule']
+    callerRole?: UserRole
   }): Promise<RevenueEntry> {
     const check = validateRevenueInput(input)
     if (!check.valid) throw new Error(check.error)
@@ -1105,6 +1139,7 @@ export class SalonRepositoryHub {
     return this.database.transaction(
       'rw',
       [
+        this.database.services,
         this.database.revenues,
         this.database.products,
         this.database.stockMovements,
@@ -1118,6 +1153,24 @@ export class SalonRepositoryHub {
         const qty = Math.max(1, Math.round(input.quantity ?? 1))
         let cashMovementId: string | undefined
         let linkedStockMovementId: string | undefined
+
+        if (input.callerRole === 'cashier' && input.serviceId) {
+          const srv = await this.database.services.get(input.serviceId)
+          if (srv?.priceLocked) {
+            const matchedVariant = input.serviceVariantId
+              ? srv.variants?.find((v) => v.id === input.serviceVariantId)
+              : undefined
+            const expectedUnit = matchedVariant
+              ? toIntFCFA(matchedVariant.price)
+              : toIntFCFA(srv.referencePrice)
+            const expectedTotal = expectedUnit * qty
+            if (toIntFCFA(input.amount) !== expectedTotal) {
+              throw new Error(
+                `Le tarif de « ${srv.name} » est verrouillé à ${expectedTotal.toLocaleString('fr-FR')} FCFA par le Gérant.`,
+              )
+            }
+          }
+        }
 
         // Décrémentation stock automatique si un produit est rattaché à la recette
         if (input.productId) {
@@ -1182,6 +1235,8 @@ export class SalonRepositoryHub {
           label: input.label.trim(),
           categoryCode: input.categoryCode,
           serviceId: input.serviceId || undefined,
+          serviceVariantId: input.serviceVariantId || undefined,
+          serviceVariantLabel: input.serviceVariantLabel || undefined,
           productId: input.productId || undefined,
           employeeId: input.employeeId || undefined,
           quantity: qty,
@@ -1664,6 +1719,14 @@ export class SalonRepositoryHub {
   // --------------------------------------------------------------------------
   // PRESTATIONS ET TARIFS (Section 10)
   // --------------------------------------------------------------------------
+  private assertManagerForServiceConfig(callerRole?: UserRole): void {
+    if (callerRole === 'cashier') {
+      throw new Error(
+        'Accès refusé : seul le Gérant peut configurer ou modifier les prestations et leurs tarifs.',
+      )
+    }
+  }
+
   public async saveService(input: {
     id?: string
     name: string
@@ -1671,20 +1734,88 @@ export class SalonRepositoryHub {
     referencePrice: number
     description?: string
     durationMinutes?: number
+    priceLocked?: boolean
+    variants?: Array<{
+      id?: string
+      label: string
+      price: number
+      durationMinutes?: number
+    }>
+    defaultConsumables?: Array<{
+      productId: string
+      quantity: number
+    }>
+    commissionOverride?: ServiceCommissionOverride | null
+    callerRole?: UserRole
   }): Promise<ServiceCatalogItem> {
+    this.assertManagerForServiceConfig(input.callerRole)
+
     const check = validateServiceInput(input)
     if (!check.valid) throw new Error(check.error)
 
+    const normalizedVariants: ServicePriceVariant[] | undefined =
+      input.variants !== undefined
+        ? input.variants.map((v) => ({
+            id: v.id?.trim() || makeId('var'),
+            label: v.label.trim(),
+            price: toIntFCFA(v.price),
+            durationMinutes:
+              v.durationMinutes && v.durationMinutes > 0
+                ? Math.round(v.durationMinutes)
+                : undefined,
+          }))
+        : undefined
+
+    let normalizedConsumables: ServiceDefaultConsumable[] | undefined
+    if (input.defaultConsumables !== undefined) {
+      const qtyByProduct = new Map<string, number>()
+      for (const c of input.defaultConsumables) {
+        const pid = c.productId.trim()
+        if (!pid) continue
+        const q = Math.max(1, Math.round(c.quantity))
+        qtyByProduct.set(pid, (qtyByProduct.get(pid) ?? 0) + q)
+      }
+      normalizedConsumables = Array.from(qtyByProduct.entries()).map(
+        ([productId, quantity]) => ({ productId, quantity }),
+      )
+    }
+
+    const normalizedCommission: ServiceCommissionOverride | undefined =
+      input.commissionOverride
+        ? {
+            mode: input.commissionOverride.mode,
+            value:
+              input.commissionOverride.mode === 'fixed'
+                ? toIntFCFA(input.commissionOverride.value)
+                : input.commissionOverride.value,
+          }
+        : undefined
+
     const nowIso = new Date().toISOString()
     if (input.id) {
-      return this.servicesRepo.update(input.id, {
+      const patch: Partial<ServiceCatalogItem> = {
         name: input.name.trim(),
         categoryCode: input.categoryCode,
         referencePrice: toIntFCFA(input.referencePrice),
         description: input.description?.trim() ?? '',
         durationMinutes: input.durationMinutes || undefined,
         updatedAt: nowIso,
-      })
+      }
+      if (input.priceLocked !== undefined) {
+        patch.priceLocked = Boolean(input.priceLocked)
+      }
+      if (normalizedVariants !== undefined) {
+        patch.variants =
+          normalizedVariants.length > 0 ? normalizedVariants : undefined
+      }
+      if (normalizedConsumables !== undefined) {
+        patch.defaultConsumables =
+          normalizedConsumables.length > 0 ? normalizedConsumables : undefined
+      }
+      if (input.commissionOverride !== undefined) {
+        patch.commissionOverride = normalizedCommission
+      }
+      return this.servicesRepo.update(input.id, patch)
     }
 
     this.assertNotDuplicate(`svc:${input.name.trim()}:${input.referencePrice}`)
@@ -1695,13 +1826,27 @@ export class SalonRepositoryHub {
       referencePrice: toIntFCFA(input.referencePrice),
       description: input.description?.trim() ?? '',
       durationMinutes: input.durationMinutes || undefined,
+      priceLocked: input.priceLocked ? true : undefined,
+      variants:
+        normalizedVariants && normalizedVariants.length > 0
+          ? normalizedVariants
+          : undefined,
+      defaultConsumables:
+        normalizedConsumables && normalizedConsumables.length > 0
+          ? normalizedConsumables
+          : undefined,
+      commissionOverride: normalizedCommission,
       isActive: true,
       createdAt: nowIso,
       updatedAt: nowIso,
     })
   }
 
-  public async toggleServiceStatus(id: string): Promise<ServiceCatalogItem> {
+  public async toggleServiceStatus(
+    id: string,
+    callerRole?: UserRole,
+  ): Promise<ServiceCatalogItem> {
+    this.assertManagerForServiceConfig(callerRole)
     const current = await this.servicesRepo.getById(id)
     if (!current) throw new Error('Prestation introuvable.')
     return this.servicesRepo.update(id, {
@@ -1710,7 +1855,11 @@ export class SalonRepositoryHub {
     })
   }
 
-  public async deleteServiceIfUnused(id: string): Promise<void> {
+  public async deleteServiceIfUnused(
+    id: string,
+    callerRole?: UserRole,
+  ): Promise<void> {
+    this.assertManagerForServiceConfig(callerRole)
     const usedCount = await this.database.revenues
       .where('serviceId')
       .equals(id)
@@ -2701,7 +2850,9 @@ export class SalonRepositoryHub {
   public async updateCategory(
     id: string,
     changes: { label?: string; isArchived?: boolean },
+    callerRole?: UserRole,
   ): Promise<CategoryItem> {
+    this.assertManagerForServiceConfig(callerRole)
     const next: Partial<CategoryItem> = {
       updatedAt: new Date().toISOString(),
     }
@@ -2720,11 +2871,28 @@ export class SalonRepositoryHub {
   public async addCustomCategory(input: {
     scope: CategoryItem['scope']
     label: string
+    callerRole?: UserRole
   }): Promise<CategoryItem> {
+    this.assertManagerForServiceConfig(input.callerRole)
     const label = input.label.trim()
     if (label.length < 2) {
       throw new Error('Le nom de la catégorie est trop court.')
     }
+    const existingInScope = (
+      await this.database.categories.where('scope').equals(input.scope).toArray()
+    ).find((c) => c.label.trim().toLowerCase() === label.toLowerCase())
+
+    if (existingInScope) {
+      if (existingInScope.isArchived) {
+        return this.categoriesRepo.update(existingInScope.id, {
+          isArchived: false,
+          label,
+          updatedAt: new Date().toISOString(),
+        })
+      }
+      throw new Error(`La catégorie « ${existingInScope.label} » existe déjà.`)
+    }
+
     const slug = label
       .toLowerCase()
       .normalize('NFD')

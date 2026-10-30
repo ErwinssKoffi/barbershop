@@ -10,6 +10,7 @@ import type {
   RecurringExpenseTemplate,
   RevenueEntry,
   SalaryPayment,
+  ServiceCatalogItem,
   StockMovement,
 } from '../models'
 import { toIntFCFA } from '../../utils/format'
@@ -338,14 +339,22 @@ export function isProductSaleRevenue(r: RevenueEntry): boolean {
  * - `employee_services` (défaut) : prestations réalisées par l'employé (hors ventes de produits)
  * - `employee_services_and_products` : prestations + ventes de produits rattachées à l'employé
  * - `total_revenue` : chiffre d'affaires global du salon
+ * Prend en charge optionnellement `servicesCatalog` afin d'appliquer un taux (%) ou un montant fixe (FCFA)
+ * spécifique configuré sur une prestation (`commissionOverride`).
  */
 export function calculateEmployeeCommission(
   employee: Employee,
   periodRevenues: RevenueEntry[],
+  servicesCatalog?: ServiceCatalogItem[],
 ): { basisAmount: number; commissionAmount: number } {
-  if (!employee.commissionEnabled || employee.commissionRate <= 0) {
+  if (!employee.commissionEnabled) {
     return { basisAmount: 0, commissionAmount: 0 }
   }
+
+  const serviceById =
+    servicesCatalog && servicesCatalog.length > 0
+      ? new Map(servicesCatalog.map((s) => [s.id, s]))
+      : null
 
   const activeRevs = periodRevenues.filter((r) => !r.isArchived)
   const matchingRevs =
@@ -361,11 +370,51 @@ export function calculateEmployeeCommission(
     (sum, r) => sum + toIntFCFA(r.amount),
     0,
   )
-  const commissionAmount = Math.round(
-    (basisAmount * employee.commissionRate) / 100,
-  )
 
-  return { basisAmount, commissionAmount }
+  if (employee.commissionBasis === 'total_revenue' || !serviceById) {
+    if (employee.commissionRate <= 0) {
+      return { basisAmount: 0, commissionAmount: 0 }
+    }
+    return {
+      basisAmount,
+      commissionAmount: Math.round(
+        (basisAmount * employee.commissionRate) / 100,
+      ),
+    }
+  }
+
+  let hasAnyCommission = employee.commissionRate > 0
+  let exactCommission = 0
+
+  for (const r of matchingRevs) {
+    const lineAmount = toIntFCFA(r.amount)
+    const linkedService =
+      r.serviceId && !isProductSaleRevenue(r)
+        ? serviceById.get(r.serviceId)
+        : undefined
+    const override = linkedService?.commissionOverride
+
+    if (override) {
+      hasAnyCommission = true
+      if (override.mode === 'fixed') {
+        const qty = Math.max(1, Math.round(r.quantity ?? 1))
+        exactCommission += toIntFCFA(override.value) * qty
+      } else {
+        exactCommission += (lineAmount * override.value) / 100
+      }
+    } else if (employee.commissionRate > 0) {
+      exactCommission += (lineAmount * employee.commissionRate) / 100
+    }
+  }
+
+  if (!hasAnyCommission) {
+    return { basisAmount: 0, commissionAmount: 0 }
+  }
+
+  return {
+    basisAmount,
+    commissionAmount: Math.round(exactCommission),
+  }
 }
 
 export interface EmployeePerformanceSummary {
@@ -382,6 +431,7 @@ export interface EmployeePerformanceSummary {
 export function calculateEmployeePerformanceSummary(
   employee: Employee,
   periodRevenues: RevenueEntry[],
+  servicesCatalog?: ServiceCatalogItem[],
 ): EmployeePerformanceSummary {
   const ownRevs = periodRevenues.filter(
     (r) => !r.isArchived && r.employeeId === employee.id,
@@ -408,6 +458,7 @@ export function calculateEmployeePerformanceSummary(
   const { commissionAmount } = calculateEmployeeCommission(
     employee,
     periodRevenues,
+    servicesCatalog,
   )
 
   return {
@@ -450,6 +501,7 @@ export function calculateEmployeePayrollStatus(params: {
   advances: AdvanceEntry[]
   bonuses: BonusEntry[]
   salaryPayments: SalaryPayment[]
+  servicesCatalog?: ServiceCatalogItem[]
 }): EmployeePayrollStatus {
   const { employee, periodMonth } = params
 
@@ -485,6 +537,7 @@ export function calculateEmployeePayrollStatus(params: {
   const { basisAmount, commissionAmount } = calculateEmployeeCommission(
     employee,
     params.periodRevenues,
+    params.servicesCatalog,
   )
 
   const empPayrolls = params.salaryPayments.filter(

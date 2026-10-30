@@ -164,6 +164,7 @@ export function ReportsPage() {
         advances: state.advances,
         bonuses: state.bonuses,
         salaryPayments: state.salaryPayments,
+        servicesCatalog: state.services,
       }),
     )
 
@@ -198,11 +199,12 @@ export function ReportsPage() {
     state.advances,
     state.bonuses,
     state.salaryPayments,
-    state.products,
-    state.correctionLogs,
-    bounds,
-    prevBounds,
-  ])
+      state.products,
+      state.services,
+      state.correctionLogs,
+      bounds,
+      prevBounds,
+    ])
 
   const handleExportCSV = () => {
     const filePrefix = `rapport-${reportType}-${todayISO()}.csv`

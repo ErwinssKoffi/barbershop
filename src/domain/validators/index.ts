@@ -115,6 +115,9 @@ export function validateServiceInput(input: {
   name: string
   referencePrice: number
   categoryCode: string
+  variants?: Array<{ label: string; price: number; durationMinutes?: number }>
+  defaultConsumables?: Array<{ productId: string; quantity: number }>
+  commissionOverride?: { mode: 'rate' | 'fixed'; value: number } | null
 }): ValidationResult {
   if (!input.name || input.name.trim().length < 2) {
     return {
@@ -133,6 +136,77 @@ export function validateServiceInput(input: {
       error: 'Veuillez choisir une catégorie de prestation.',
     }
   }
+
+  if (input.variants && input.variants.length > 0) {
+    for (const variant of input.variants) {
+      if (!variant.label || variant.label.trim().length < 1) {
+        return {
+          valid: false,
+          error: 'Chaque variante doit avoir un libellé (ex. Court, Long).',
+        }
+      }
+      const varPriceCheck = validatePositiveFCFA(
+        variant.price,
+        `Le tarif de la variante « ${variant.label.trim()} »`,
+      )
+      if (!varPriceCheck.valid) return varPriceCheck
+      if (
+        variant.durationMinutes !== undefined &&
+        (!Number.isFinite(variant.durationMinutes) ||
+          variant.durationMinutes <= 0)
+      ) {
+        return {
+          valid: false,
+          error: `La durée de la variante « ${variant.label.trim()} » doit être supérieure à 0 minute.`,
+        }
+      }
+    }
+  }
+
+  if (input.defaultConsumables && input.defaultConsumables.length > 0) {
+    for (const cons of input.defaultConsumables) {
+      if (!cons.productId || !cons.productId.trim()) {
+        return {
+          valid: false,
+          error: 'Veuillez sélectionner un produit pour chaque consommable cabine.',
+        }
+      }
+      if (
+        !Number.isFinite(cons.quantity) ||
+        !Number.isInteger(cons.quantity) ||
+        cons.quantity < 1
+      ) {
+        return {
+          valid: false,
+          error:
+            'La quantité de chaque consommable cabine doit être un entier supérieur ou égal à 1.',
+        }
+      }
+    }
+  }
+
+  if (input.commissionOverride) {
+    if (input.commissionOverride.mode === 'rate') {
+      if (
+        !Number.isFinite(input.commissionOverride.value) ||
+        input.commissionOverride.value <= 0 ||
+        input.commissionOverride.value > 100
+      ) {
+        return {
+          valid: false,
+          error:
+            'Le taux de commission spécifique de la prestation doit être compris entre 0,5% et 100%.',
+        }
+      }
+    } else if (input.commissionOverride.mode === 'fixed') {
+      const fixedCheck = validateNonNegativeFCFA(
+        input.commissionOverride.value,
+        'La commission fixe de la prestation',
+      )
+      if (!fixedCheck.valid) return fixedCheck
+    }
+  }
+
   return { valid: true }
 }
 

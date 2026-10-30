@@ -161,6 +161,7 @@ export function MainLayout() {
         advances: state.advances,
         bonuses: state.bonuses,
         salaryPayments: state.salaryPayments,
+        servicesCatalog: state.services,
       }),
     )
     return buildDashboardAlerts({
@@ -185,9 +186,10 @@ export function MainLayout() {
     state.expenses,
     state.budgets,
     state.settings.lastBackupExportedAt,
-    state.recurringExpenses,
-    currentYm,
-  ])
+      state.recurringExpenses,
+      state.services,
+      currentYm,
+    ])
 
   const lowStockCount = useMemo(
     () =>
