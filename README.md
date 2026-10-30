@@ -1,1 +1,65 @@
-# barbershop
+# SALON PRO — Gestion Financière et Administrative de Salon de Coiffure
+
+**SALON PRO** est une application web moderne, rapide et **Hybride Hors-Ligne (IndexedDB + Neon PostgreSQL)** de gestion financière et administrative pour salon de coiffure et barbershop, conçue en français avec montants entiers en **Francs CFA (`FCFA`)**.
+
+---
+
+## 1. Architecture réactive en 6 Contextes transverses
+
+1. **`SalonStoreContext` (`SalonDataContext`)** : État réactif local synchronisé sur **IndexedDB (Dexie v2)** via des transactions multi-tables atomiques (`SalonRepositoryHub`).
+2. **`CloudSyncContext`** : Synchronisation bidirectionnelle **Last-Write-Wins (`updatedAt`)** entre IndexedDB locale et **Neon PostgreSQL**, authentifiée par jeton de session signé (`HMAC-SHA256`) ou code serveur optionnel (`SALON_SYNC_PIN`), avec continuité hors-ligne automatique.
+3. **`PeriodFilterContext`** : Période d'analyse partagée (`Aujourd'hui`, `7 jours`, `Ce mois`, `Mois précédent`, `Année`, `Personnalisée` + `selectedMonth`) synchronisée entre Tableau de bord, Recettes, Dépenses, Personnel, Paie, Budget et Rapports.
+4. **`CashSessionContext`** : État temps réel du tiroir-caisse dans la Topbar (`Caisse ouverte · XX XXX FCFA` / `Caisse fermée`), détection automatique des sessions de la veille non clôturées (`isSessionStale`) et avertissement non bloquant avec bouton *« Ouvrir la caisse maintenant »*.
+5. **`QuickActionContext`** : Modales universelles accessibles depuis n'importe quel écran (`Ticket client multi-lignes`, `Dépense rapide`, `Ouverture de caisse`, `Reçu client imprimable 80mm / A5`).
+6. **`WorkspaceFocusContext`** : Ciblage contextuel intelligent (`deep-link`) depuis la recherche globale `⌘K`, les *Opérations récentes* et les *Alertes proactives* directement vers l'écriture ou le filtre concerné.
+
+---
+
+## 2. Périmètre fonctionnel complet (11 rubriques + outils transverses)
+
+1. **Tableau de bord (`/dashboard`)** : Cartes KPI avec évolution vs période précédente, graphiques interactifs, suivi budgétaire, opérations récentes cliquables et **alertes proactives** (caisse de la veille non clôturée, sauvegarde > 7 jours, pré-alerte budget à 85 % et dépassement à 100 %, ruptures de stock, salaires en attente, charges fixes mensuelles à régler).
+2. **Gestion de caisse (`/cash`)** : Ouverture de session espèces, entrées/sorties espèces, solde théorique temps réel, **calculateur optionnel de billetage FCFA** (`10 000` à `25` FCFA) à la clôture, corrections traçables et rapport imprimable A4. *Séparation stricte entre espèces physiques et Mobile Money (`Wave`, `Orange Money`, `MTN MoMo`, `Carte`, `Virement`).*
+3. **Gestion des recettes (`/revenue`)** : **Ticket Client multi-lignes** (1 à N prestations et/ou produits de revente, employé par ligne, calculateur de monnaie rendue), **paiement mixte** (ex. Espèces + Wave où seule la part espèces alimente la caisse), **consommables cabine optionnels** décrémentant le stock (`utilisation`) sans surfacturation client, **reçu client séquentiel (`REC-YYYYMMDD-XXX`) imprimable (`80mm` / `A5`)**, réintégration automatique du stock en cas d'annulation et synchronisation complète Wave ↔ Espèces à la modification.
+4. **Gestion des dépenses (`/expenses`)** : **Charges fixes mensuelles récurrentes** (*Loyer, CIE, SODECI, Internet…*) validables en 1 clic avec suivi `Payé / À payer`, pont intelligent vers l'Inventaire lors d'un achat de produits capillaires pour éviter tout double comptage, filtres, justificatifs, export CSV et impression.
+5. **Prestations et tarifs (`/services`)** : Catalogue tarifaire du salon, statistiques de réalisations et CA par prestation, bouton **« Encaisser » en 1 clic** pré-remplissant le Ticket Client, export CSV et grille tarifaire imprimable A4.
+6. **Gestion du personnel (`/employees`)** : Fiches salariés, performance par coiffeur/barbier sur la période active, **3 bases de commission au choix** (`Prestations seules` [défaut], `Prestations + Produits vendus`, `CA global du salon`), raccourcis 1 clic vers Avance et Paie.
+7. **Salaires, avances, primes et commissions (`/payroll`)** : Préparation mensuelle de la paie, **indicateur intelligent de plafond d'avance**, support des **paiements de salaire partiels (acompte + solde)** sans double déduction des avances, et **bulletin / reçu de paie imprimable** avec encadrés de signature Employé & Gérant.
+8. **Inventaire des produits et consommables (`/inventory`)** : Suivi des consommables, produits de revente et produits mixtes, **recalcul automatique du CUMP (Coût Unitaire Moyen Pondéré en FCFA entiers)** lors des achats fournisseurs, seuils d'alerte, mouvements transactionnels et export CSV.
+9. **Rapports et états financiers (`/reports`)** : 8 états financiers incluant le **Rapprochement par mode de paiement** (*Caisse physique espèces vs Wave vs Orange Money vs MTN MoMo…*) et le **Journal d'audit** avec comparatif lisible **Avant ➔ Après**, export CSV et aperçu imprimable.
+10. **Budget et objectifs (`/budget`)** : Objectif mensuel de CA, plafonds par catégorie avec pré-alerte dès **85 %**, **prévision de fin de mois (*run-rate*)**, reconduction en 1 clic du mois précédent, export CSV et impression A4.
+11. **Paramètres (`/settings`)** : Identité et logo du salon, thème clair/sombre, reçu client (`80mm` / `A5`), catégories personnalisables, **Synchronisation Cloud Neon PostgreSQL** (`Paramètres → Cloud Neon`), sauvegarde/restauration JSON complète (`SALON_PRO_BACKUP_V1`) et réinitialisation protégée par `SUPPRIMER`.
+
+---
+
+## 3. Configuration Neon PostgreSQL (Mode Hybride Hors-Ligne + Cloud)
+
+1. Copiez `.env.example` vers `.env` à la racine du projet (ou configurez ces variables dans **Vercel → Settings → Environment Variables**) :
+   ```env
+   DATABASE_URL="postgresql://UTILISATEUR:MOT_DE_PASSE@VOTRE_HOTE.neon.tech/VOTRE_BASE?sslmode=require"
+   SALON_AUTH_SECRET=""
+   SALON_SYNC_PIN=""
+   ```
+   > **Sécurité** : Ne préfixez jamais ces variables par `VITE_`. Elles sont lues uniquement côté serveur (`server/viteApiPlugin.ts` en local et `api/[...route].ts` sur Vercel).
+2. Le schéma PostgreSQL complet (`19` tables relationnelles incluant `salon_users` + `sync_tombstones`) est initialisé automatiquement au premier appel, ou exécutable manuellement dans l'éditeur SQL Neon via `db/schema.sql`.
+3. Dans l'application, ouvrez **Paramètres → Cloud Neon** puis cliquez sur **Activer la synchronisation Neon**.
+
+---
+
+## 4. Installation, lancement et tests
+
+```bash
+# 1. Installer les dépendances
+npm install
+
+# 2. Lancer le serveur Full-Stack local (Frontend + API /api/*)
+npm run dev
+
+# 3. Exécuter la suite de tests automatisés (Vitest + Testing Library + fake-indexeddb)
+npm test
+
+# 4. Vérifier la qualité du code (Oxlint)
+npm run lint
+
+# 5. Compiler la version de production (TypeScript + Vite)
+npm run build
+```
