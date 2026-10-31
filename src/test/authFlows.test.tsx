@@ -1,15 +1,16 @@
+import { createPostgresTestPool } from './postgresTestPool'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { handleSalonApiRequest } from '../../server/apiHandler'
 import {
   hashPasswordNode,
   verifyPasswordNode,
 } from '../../server/authEngine'
-import type { SqlClientLike, SqlPoolLike } from '../../server/neonClient'
+import type { SqlPoolLike } from '../../server/neonClient'
 import { AppRoutes } from '../app/router'
 import { AuthProvider } from '../contexts/AuthProvider'
 import { SalonProDatabase } from '../db/database'
@@ -22,49 +23,7 @@ import {
 } from '../utils/passwordCrypto'
 
 function createAuthMemoryPool(): SqlPoolLike {
-  const users = new Map<string, { updated_at: string; payload_json: unknown }>()
-
-  const query = async <R = Record<string, unknown>>(
-    text: string,
-    values: unknown[] = [],
-  ): Promise<{ rows: R[]; rowCount: number | null }> => {
-    const norm = text.replace(/\s+/g, ' ').trim()
-    if (
-      norm.startsWith('CREATE TABLE') ||
-      norm.startsWith('CREATE INDEX') ||
-      norm === 'BEGIN' ||
-      norm === 'COMMIT'
-    ) {
-      return { rows: [], rowCount: 0 }
-    }
-    if (norm.startsWith('SELECT payload_json FROM salon_users')) {
-      const rows = Array.from(users.values()).map((u) => ({
-        payload_json: u.payload_json,
-      })) as R[]
-      return { rows, rowCount: rows.length }
-    }
-    if (norm.startsWith('SELECT payload_json FROM ')) {
-      return { rows: [], rowCount: 0 }
-    }
-    if (norm.includes('FROM sync_tombstones')) {
-      return { rows: [], rowCount: 0 }
-    }
-    if (norm.startsWith('INSERT INTO salon_users')) {
-      const id = String(values[0])
-      const updatedAt = String(values[9])
-      const payload = JSON.parse(String(values[10]))
-      users.set(id, { updated_at: updatedAt, payload_json: payload })
-      return { rows: [], rowCount: 1 }
-    }
-    throw new Error(`SQL non géré : ${norm}`)
-  }
-
-  return {
-    query,
-    async connect(): Promise<SqlClientLike> {
-      return { query, release: () => {} }
-    },
-  }
+  return createPostgresTestPool().pool
 }
 
 async function callApi(params: {
@@ -85,6 +44,7 @@ async function callApi(params: {
 
   let statusCode = 200
   let raw = ''
+  const responseHeaders: Record<string, string> = {}
   const res = {
     get statusCode() {
       return statusCode
@@ -92,7 +52,7 @@ async function callApi(params: {
     set statusCode(c: number) {
       statusCode = c
     },
-    setHeader: () => res,
+    setHeader: (key: string, value: string) => { responseHeaders[key] = value; return res },
     end: (chunk?: string) => {
       if (chunk) raw += chunk
     },
@@ -106,6 +66,7 @@ async function callApi(params: {
 
   return {
     statusCode,
+    headers: responseHeaders,
     json: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
   }
 }
@@ -114,6 +75,98 @@ describe('Inscription, Connexion Hybride & Contrôle d’accès par rôle (Géra
   beforeEach(() => {
     window.localStorage.clear()
     window.sessionStorage.clear()
+  })
+
+  it('protège les routes comptes, protège le dernier Gérant et refuse les hashes fournis par le client', async () => {
+    const pool = createAuthMemoryPool()
+    const manager = await callApi({ pool, method: 'POST', url: '/api/auth/register', body: {
+      fullName: 'Responsable Test', email: 'manager@example.invalid', password: 'Password2026', role: 'manager',
+    } })
+    const headers = { Authorization: `Bearer ${manager.json.sessionToken}` }
+    const managerId = (manager.json.user as { id: string }).id
+    expect((await callApi({ pool, method: 'GET', url: '/api/users' })).statusCode).toBe(401)
+    const list = await callApi({ pool, headers, method: 'GET', url: '/api/users' })
+    expect(list.statusCode).toBe(200)
+    expect(JSON.stringify(list.json)).not.toContain('passwordHash')
+    const demote = await callApi({ pool, headers, method: 'PATCH', url: `/api/users/${managerId}`, body: { role: 'cashier' } })
+    expect(demote.json.code).toBe('LAST_MANAGER_REQUIRED')
+    const disable = await callApi({ pool, headers, method: 'PATCH', url: `/api/users/${managerId}`, body: { isActive: false } })
+    expect(disable.json.code).toBe('SELF_DISABLE_FORBIDDEN')
+    const forged = await callApi({ pool, headers, method: 'POST', url: '/api/users/provision', body: { passwordHash: 'untrusted' } })
+    expect(forged.statusCode).toBe(400)
+    const body = { fullName: 'Collaborateur Test', email: 'cashier@example.invalid', password: 'Password2026', role: 'cashier' }
+    const created = await callApi({ pool, headers, method: 'POST', url: '/api/users/provision', body })
+    expect(created.statusCode).toBe(201)
+    expect(created.json).not.toHaveProperty('recordForCache')
+    expect(created.json).not.toHaveProperty('sessionToken')
+    expect(JSON.stringify(created.json)).not.toContain('passwordHash')
+    expect((await callApi({ pool, headers, method: 'POST', url: '/api/users/provision', body })).statusCode).toBe(409)
+    const login = await callApi({ pool, method: 'POST', url: '/api/auth/login', body: { email: body.email, password: body.password } })
+    const denied = await callApi({ pool, headers: { Authorization: `Bearer ${login.json.sessionToken}` }, method: 'GET', url: '/api/users' })
+    expect(denied.statusCode).toBe(403)
+  })
+
+  it('applique immédiatement une rétrogradation aux routes comptes et inscription malgré un ancien jeton Gérant', async () => {
+    const pool = createAuthMemoryPool()
+    const first = await callApi({ pool, method: 'POST', url: '/api/auth/register', body: {
+      fullName: 'Premier Responsable', email: 'first@example.invalid', password: 'Password2026',
+    } })
+    const firstHeaders = { Authorization: `Bearer ${first.json.sessionToken}` }
+    const second = await callApi({ pool, headers: firstHeaders, method: 'POST', url: '/api/auth/register', body: {
+      fullName: 'Second Responsable', email: 'second@example.invalid', password: 'Password2026',
+    } })
+    const id = (second.json.user as { id: string }).id
+    const secondHeaders = { Authorization: `Bearer ${second.json.sessionToken}` }
+    expect((await callApi({ pool, headers: firstHeaders, method: 'PATCH', url: `/api/users/${id}`, body: { role: 'cashier', password: 'Updated2026' } })).statusCode).toBe(200)
+    expect((await callApi({ pool, headers: secondHeaders, method: 'GET', url: '/api/users' })).statusCode).toBe(401)
+    const register = await callApi({ pool, headers: secondHeaders, method: 'POST', url: '/api/auth/register', body: {
+      fullName: 'Autre Collaborateur', email: 'other@example.invalid', password: 'Password2026',
+    } })
+    expect(register.statusCode).toBe(401)
+    const login = await callApi({ pool, method: 'POST', url: '/api/auth/login', body: { email: 'second@example.invalid', password: 'Updated2026' } })
+    expect(login.statusCode).toBe(200)
+    expect((await callApi({ pool, headers: firstHeaders, method: 'PATCH', url: `/api/users/${id}`, body: { passwordHash: 'forged' } })).statusCode).toBe(400)
+  })
+
+  it('bloque après 5 tentatives par identité, expose Retry-After et libère le compteur à expiration', async () => {
+    const pool = createAuthMemoryPool()
+    const attempt = () => callApi({ pool, method: 'POST', url: '/api/auth/login', body: { email: 'limit@example.invalid', password: 'incorrect' } })
+    for (let i = 0; i < 5; i++) expect((await attempt()).statusCode).toBe(401)
+    const blocked = await attempt()
+    expect(blocked.statusCode).toBe(429)
+    expect(Number(blocked.headers['Retry-After'])).toBeGreaterThan(0)
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 901_000)
+    try { expect((await attempt()).statusCode).toBe(401) } finally { clock.mockRestore() }
+  })
+
+  it('réinitialise le compteur identité après succès sans réinitialiser la protection IP', async () => {
+    const pool = createAuthMemoryPool()
+    await callApi({ pool, method: 'POST', url: '/api/auth/register', body: { fullName: 'Compte Réel', email: 'reset@example.invalid', password: 'Password2026' } })
+    const attempt = (password: string) => callApi({ pool, method: 'POST', url: '/api/auth/login', body: { email: 'reset@example.invalid', password } })
+    for (let i = 0; i < 4; i++) expect((await attempt('incorrect')).statusCode).toBe(401)
+    expect((await attempt('Password2026')).statusCode).toBe(200)
+    for (let i = 0; i < 5; i++) expect((await attempt('incorrect')).statusCode).toBe(401)
+    expect((await attempt('Password2026')).statusCode).toBe(429)
+  })
+
+  it('limite les IP même avec des identifiants variés et les inscriptions invalides', async () => {
+    const pool = createAuthMemoryPool()
+    for (let i = 0; i < 30; i++) {
+      expect((await callApi({ pool, method: 'POST', url: '/api/auth/login', body: { email: `attempt${i}@example.invalid`, password: 'incorrect' } })).statusCode).toBe(401)
+    }
+    expect((await callApi({ pool, method: 'POST', url: '/api/auth/login', body: { email: 'next@example.invalid', password: 'incorrect' } })).statusCode).toBe(429)
+    for (let i = 0; i < 10; i++) expect((await callApi({ pool, method: 'POST', url: '/api/auth/register', body: {} })).statusCode).toBe(400)
+    expect((await callApi({ pool, method: 'POST', url: '/api/auth/register', body: {} })).statusCode).toBe(429)
+  })
+
+  it('refuse de servir une instance de production sans secret stable', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('SALON_AUTH_SECRET', '')
+    try {
+      const health = await callApi({ pool: createAuthMemoryPool(), method: 'GET', url: '/api/health' })
+      expect(health.statusCode).toBe(503)
+      expect(health.json.code).toBe('AUTH_SECRET_MISSING')
+    } finally { vi.unstubAllEnvs() }
   })
 
   it('assure une compatibilité cryptographique PBKDF2-SHA256 à 100 % entre Node et WebCrypto', async () => {

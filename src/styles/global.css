@@ -2948,3 +2948,25 @@ textarea {
     display: none !important;
   }
 }
+
+/* In normal document flow: never cover a checkout or an unsaved form. */
+.pwa-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: .75rem;
+  padding: .65rem 1rem;
+  background: #112a21;
+  color: #e6f7ed;
+  border-bottom: 1px solid #28543e;
+  font-size: .85rem;
+}
+.pwa-status p { margin: 0; max-width: 75ch; }
+.pwa-status button {
+  border: 1px solid currentColor;
+  border-radius: .4rem;
+  padding: .3rem .65rem;
+  cursor: pointer;
+}
+.pwa-status button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }

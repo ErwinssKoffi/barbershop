@@ -1,3 +1,4 @@
+import { useAuth } from '../../contexts/authContext'
 import {
   AlertTriangle,
   ArrowDownCircle,
@@ -96,6 +97,8 @@ const PIE_COLORS = [
 ]
 
 export function DashboardPage() {
+  const { currentUser } = useAuth()
+  const canViewPayroll = currentUser?.role !== 'cashier'
   const { state, categoryLabel, mutate } = useSalonStore()
   const {
     preset,
@@ -388,7 +391,7 @@ export function DashboardPage() {
     const monthRevs = state.revenues.filter(
       (r) => !r.isArchived && r.date.slice(0, 7) === ym,
     )
-    const payrollStatuses = state.employees.map((employee) =>
+    const payrollStatuses = (canViewPayroll ? state.employees : []).map((employee) =>
       calculateEmployeePayrollStatus({
         employee,
         periodMonth: ym,
@@ -412,6 +415,7 @@ export function DashboardPage() {
       todayDateISO: today,
     })
   }, [
+    canViewPayroll,
     today,
     state.revenues,
     state.expenses,

@@ -1,3 +1,8 @@
+import { workspaceKey } from '../db/accountWorkspace'
+import { useAuth } from './authContext'
+import type { SalonBackupPayload } from '../domain/models'
+import type { CloudDeltaPage } from '../domain/cloudDelta'
+import { accessClaims, currentAccessToken, fetchWithSession } from '../lib/sessionClient'
 import {
   useCallback,
   useEffect,
@@ -7,7 +12,6 @@ import {
   type ReactNode,
 } from 'react'
 import type { LocalSyncTombstone } from '../db/repositories/salonRepositories'
-import type { SalonBackupPayload } from '../domain/models'
 import { useSalonStore } from '../hooks/salonStoreContext'
 import { useToast } from '../hooks/toastContext'
 import { CloudSyncContext, type CloudSyncStatus } from './cloudSyncContext'
@@ -30,10 +34,10 @@ function purgeLegacyPinStorage(): void {
   }
 }
 
-function readStoredPrefs(): StoredSyncPrefs {
+function readStoredPrefs(key: string): StoredSyncPrefs {
   purgeLegacyPinStorage()
   try {
-    const raw = window.localStorage.getItem(PREFS_KEY)
+    const raw = window.localStorage.getItem(key)
     if (!raw) {
       return {
         enabled: false,
@@ -62,9 +66,9 @@ function readStoredPrefs(): StoredSyncPrefs {
   }
 }
 
-function writeStoredPrefs(prefs: StoredSyncPrefs): void {
+function writeStoredPrefs(prefs: StoredSyncPrefs, key: string): void {
   try {
-    window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+    window.localStorage.setItem(key, JSON.stringify(prefs))
   } catch {
     // ignore storage quota errors
   }
@@ -72,11 +76,14 @@ function writeStoredPrefs(prefs: StoredSyncPrefs): void {
 
 export function CloudSyncProvider({ children }: { children: ReactNode }) {
   const { mutationCount, syncWithRepo } = useSalonStore()
+  const { currentUser, sessionToken } = useAuth()
+  const prefsKey = `${PREFS_KEY}:${currentUser ? encodeURIComponent(workspaceKey(currentUser)) : 'signed-out'}`
   const toast = useToast()
+  const bootstrapStarted = useRef(false)
 
-  const [prefs, setPrefs] = useState<StoredSyncPrefs>(readStoredPrefs)
+  const [prefs, setPrefs] = useState<StoredSyncPrefs>(() => readStoredPrefs(prefsKey))
   const [status, setStatus] = useState<CloudSyncStatus>(() =>
-    readStoredPrefs().enabled ? 'idle' : 'disabled',
+    readStoredPrefs(prefsKey).enabled ? 'idle' : 'disabled',
   )
   const [lastError, setLastError] = useState<string | null>(null)
   const [databaseConfiguredOnServer, setDatabaseConfiguredOnServer] = useState<
@@ -118,22 +125,31 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
       setLastError(null)
 
       try {
-        const envelope = await syncWithRepo((repo) =>
-          repo.buildCloudSyncEnvelope(),
-        )
-        const savedSessionToken = (() => {
-          try {
-            return (
-              window.sessionStorage.getItem('salon_pro_auth_token_session') ??
-              window.localStorage.getItem('salon_pro_auth_token_local') ??
-              ''
-            )
-          } catch {
-            return ''
+        const savedSessionToken = await currentAccessToken()
+        const tokenTenant = accessClaims(savedSessionToken)?.tid
+        let conflictCount = 0
+        const drain = async (sent?: Partial<SalonBackupPayload>) => {
+          let cursor = await syncWithRepo((repo) => repo.cloudSyncCursor())
+          if (cursor === undefined) return
+          for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
+            const response = await fetchWithSession(`/api/sync/pull?since=${cursor}&limit=500`)
+            const page = await response.json() as CloudDeltaPage & { message?: string }
+            if (!response.ok) throw new Error(page.message ?? 'Lecture Cloud refusée.')
+            const merged = await syncWithRepo((repo) => repo.mergeCloudDelta(page, sent))
+            conflictCount += merged.conflicts
+            cursor = page.cursor
+            if (!page.hasMore) return
           }
-        })()
+          throw new Error('Synchronisation volumineuse : relancez pour continuer la pagination.')
+        }
+        await syncWithRepo((repo) => repo.assertCloudWorkspace(tokenTenant))
+        await drain()
+        const envelope = await syncWithRepo(async (repo) => {
+          await repo.assertCloudWorkspace(tokenTenant)
+          return repo.buildCloudDeltaEnvelope()
+        })
 
-        const resp = await window.fetch('/api/sync', {
+        const resp = await fetchWithSession('/api/sync', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -144,13 +160,12 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify(envelope),
         })
 
-        const data = (await resp.json().catch(() => ({}))) as {
+        const data = (await resp.json().catch(() => ({}))) as CloudDeltaPage & {
           ok?: boolean
           code?: string
           message?: string
           syncedAt?: string
           stats?: { totalRemoteRecords?: number }
-          payload?: SalonBackupPayload
           tombstones?: LocalSyncTombstone[]
         }
 
@@ -183,12 +198,15 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           return false
         }
 
-        await syncWithRepo((repo) =>
-          repo.mergeCloudSyncResult({
-            payload: data.payload ?? null,
-            tombstones: data.tombstones ?? [],
-          }),
-        )
+        const merged = await syncWithRepo((repo) => repo.mergeCloudDelta(data, envelope.payload, envelope.tombstones))
+        conflictCount += merged.conflicts
+        if (data.hasMore) await drain(envelope.payload)
+        if (conflictCount) {
+          const message = `${conflictCount} conflit(s) ou écriture(s) refusée(s). Les versions locales sont conservées dans le journal de conflits, téléchargeable dans les paramètres Cloud.`
+          setStatus('error'); setLastError(message)
+          if (!options?.silent) toast.warning(message)
+          return false
+        }
 
         const syncedAt = data.syncedAt ?? new Date().toISOString()
         const remoteRecordsCount =
@@ -203,7 +221,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
             lastSyncedAt: syncedAt,
             remoteRecordsCount,
           }
-          writeStoredPrefs(next)
+          writeStoredPrefs(next, prefsKey)
           return next
         })
         setStatus('synced')
@@ -213,10 +231,9 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           toast.success('Synchronisation Neon PostgreSQL réussie.')
         }
         return true
-      } catch {
-        setStatus('offline')
-        const msg =
-          'Connexion réseau indisponible : vos données restent protégées localement (IndexedDB).'
+      } catch (error) {
+        setStatus(navigator.onLine === false ? 'offline' : 'error')
+        const msg = error instanceof Error ? error.message : 'Connexion réseau indisponible : vos données restent protégées localement (IndexedDB).'
         setLastError(msg)
         if (!options?.silent) toast.warning(msg)
         return false
@@ -224,7 +241,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         syncInFlightRef.current = false
       }
     },
-    [syncWithRepo, toast],
+    [syncWithRepo, toast, prefsKey],
   )
 
   const syncNow = useCallback(
@@ -245,7 +262,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         autoSync: params.autoSync,
       }
       setPrefs(nextPrefs)
-      writeStoredPrefs(nextPrefs)
+      writeStoredPrefs(nextPrefs, prefsKey)
 
       const ok = await runBidirectionalSync({ silent: true })
       if (ok) {
@@ -261,16 +278,16 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           'Mode Hybride configuré localement (la synchronisation reprendra dès que Neon PostgreSQL sera joignable).',
       }
     },
-    [prefs, runBidirectionalSync],
+    [prefs, runBidirectionalSync, prefsKey],
   )
 
   const setAutoSync = useCallback((enabled: boolean) => {
     setPrefs((prev) => {
       const next = { ...prev, autoSync: enabled }
-      writeStoredPrefs(next)
+      writeStoredPrefs(next, prefsKey)
       return next
     })
-  }, [])
+  }, [prefsKey])
 
   const disconnectCloudSync = useCallback(() => {
     purgeLegacyPinStorage()
@@ -278,10 +295,22 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     setStatus('disabled')
     setPrefs((prev) => {
       const next: StoredSyncPrefs = { ...prev, enabled: false }
-      writeStoredPrefs(next)
+      writeStoredPrefs(next, prefsKey)
       return next
     })
-  }, [])
+  }, [prefsKey])
+
+  useEffect(() => {
+    if (bootstrapStarted.current || !currentUser?.tenantId || !sessionToken) return
+    const timer = window.setTimeout(() => { bootstrapStarted.current = true; void runBidirectionalSync({ silent: true }) }, 0)
+    return () => window.clearTimeout(timer)
+  }, [currentUser?.tenantId, sessionToken, runBidirectionalSync])
+
+  useEffect(() => {
+    if (!prefs.enabled || !prefs.autoSync) return
+    const timer = window.setTimeout(() => void runBidirectionalSync({ silent: true }), 0)
+    return () => window.clearTimeout(timer)
+  }, [prefs.enabled, prefs.autoSync, runBidirectionalSync])
 
   useEffect(() => {
     if (!prefs.enabled || !prefs.autoSync || mutationCount === 0) return

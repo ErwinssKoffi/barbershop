@@ -3,9 +3,11 @@ import type {
   FullSalonState,
   SalonRepositoryHub,
 } from '../db/repositories/salonRepositories'
-import type { CategoryScope } from '../domain/models'
+import type { CategoryScope, PublicSalonUser } from '../domain/models'
 
 export interface SalonStoreContextValue {
+  identityWithRepo?: <R>(fn: (repo: SalonRepositoryHub) => Promise<R>) => Promise<R>
+  activateWorkspace?: (user: PublicSalonUser | null) => Promise<void>
   state: FullSalonState
   ready: boolean
   mutationCount: number

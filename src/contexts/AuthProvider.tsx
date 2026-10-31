@@ -1,8 +1,12 @@
+import { workspaceKey } from '../db/accountWorkspace'
+import { AUTH_USER_LOCAL_KEY, AUTH_USER_SESSION_KEY, AUTH_TOKEN_LOCAL_KEY, AUTH_TOKEN_SESSION_KEY, SESSION_UPDATED_EVENT, readStoredSession, storeAuthSession, logoutServerSession, currentAccessToken, fetchWithSession } from '../lib/sessionClient'
+export { AUTH_USER_LOCAL_KEY, AUTH_USER_SESSION_KEY, AUTH_TOKEN_LOCAL_KEY, AUTH_TOKEN_SESSION_KEY }
 import {
   useCallback,
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
 } from 'react'
 import type { PublicSalonUser, SalonUserAccount } from '../domain/models'
@@ -14,11 +18,6 @@ import {
   type RegisterAccountParams,
 } from './authContext'
 
-export const AUTH_USER_LOCAL_KEY = 'salon_pro_auth_user_local'
-export const AUTH_USER_SESSION_KEY = 'salon_pro_auth_user_session'
-export const AUTH_TOKEN_LOCAL_KEY = 'salon_pro_auth_token_local'
-export const AUTH_TOKEN_SESSION_KEY = 'salon_pro_auth_token_session'
-
 function purgeLegacyStoredPins(): void {
   try {
     window.sessionStorage.removeItem('salon_pro_cloud_pin_session')
@@ -28,73 +27,29 @@ function purgeLegacyStoredPins(): void {
   }
 }
 
-function readPersistedAuth(): {
-  user: PublicSalonUser | null
-  token: string | null
-} {
+function readPersistedAuth() {
   purgeLegacyStoredPins()
-  try {
-    const rawSession = window.sessionStorage.getItem(AUTH_USER_SESSION_KEY)
-    const rawLocal = window.localStorage.getItem(AUTH_USER_LOCAL_KEY)
-    const rawUser = rawSession ?? rawLocal
-    const token =
-      window.sessionStorage.getItem(AUTH_TOKEN_SESSION_KEY) ??
-      window.localStorage.getItem(AUTH_TOKEN_LOCAL_KEY) ??
-      null
-
-    if (!rawUser) return { user: null, token: null }
-    const parsed = JSON.parse(rawUser) as PublicSalonUser
-    if (!parsed?.id || !parsed?.email || !parsed?.role) {
-      return { user: null, token: null }
-    }
-    return { user: parsed, token }
-  } catch {
-    return { user: null, token: null }
-  }
+  return readStoredSession()
 }
-
-function persistAuthSession(
-  user: PublicSalonUser,
-  token: string | null,
-  rememberMe: boolean,
-): void {
+function persistAuthSession(user: PublicSalonUser, token: string | null, rememberMe: boolean): void {
   purgeLegacyStoredPins()
-  try {
-    const serialized = JSON.stringify(user)
-    window.sessionStorage.setItem(AUTH_USER_SESSION_KEY, serialized)
-    if (token) {
-      window.sessionStorage.setItem(AUTH_TOKEN_SESSION_KEY, token)
-    }
-    if (rememberMe) {
-      window.localStorage.setItem(AUTH_USER_LOCAL_KEY, serialized)
-      if (token) {
-        window.localStorage.setItem(AUTH_TOKEN_LOCAL_KEY, token)
-      }
-    } else {
-      window.localStorage.removeItem(AUTH_USER_LOCAL_KEY)
-      window.localStorage.removeItem(AUTH_TOKEN_LOCAL_KEY)
-    }
-  } catch {
-    // ignore storage errors
-  }
-}
-
-function clearPersistedAuthSession(): void {
-  purgeLegacyStoredPins()
-  try {
-    window.sessionStorage.removeItem(AUTH_USER_SESSION_KEY)
-    window.sessionStorage.removeItem(AUTH_TOKEN_SESSION_KEY)
-    window.localStorage.removeItem(AUTH_USER_LOCAL_KEY)
-    window.localStorage.removeItem(AUTH_TOKEN_LOCAL_KEY)
-  } catch {
-    // ignore storage errors
-  }
+  storeAuthSession(user, token, rememberMe)
 }
 
 class ServerBusinessAuthError extends Error {}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { mutate, syncWithRepo } = useSalonStore()
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const store = useSalonStore()
+  const mutate = store.identityWithRepo ?? store.mutate
+  const syncWithRepo = store.identityWithRepo ?? store.syncWithRepo
+  const activateWorkspace = store.activateWorkspace
+  const [readyScope, setReadyScope] = useState<string | null>(null)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
 
   const [currentUser, setCurrentUser] = useState<PublicSalonUser | null>(
     () => readPersistedAuth().user,
@@ -106,6 +61,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady] = useState(false)
   const [hasAnyManager, setHasAnyManager] = useState(false)
   const [authMode, setAuthMode] = useState<AuthMode>('checking')
+
+  const scope = currentUser ? workspaceKey(currentUser) : 'signed-out'
+  const workspaceUser = useRef(currentUser)
+  useEffect(() => { workspaceUser.current = currentUser }, [currentUser])
+  useEffect(() => {
+    let cancelled = false
+    void (activateWorkspace?.(workspaceUser.current) ?? Promise.resolve()).then(() => {
+      if (!cancelled) { setWorkspaceError(null); setReadyScope(scope) }
+    }).catch(() => { if (!cancelled) setWorkspaceError('Impossible d’ouvrir cet espace local. Aucune donnée n’a été supprimée. Rechargez l’application.') })
+    return () => { cancelled = true }
+  }, [scope, activateWorkspace])
 
   const refreshAuthStatus = useCallback(async () => {
     purgeLegacyStoredPins()
@@ -124,6 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
     )
+    if (!mounted.current) return
     setLocalAccounts(accounts)
 
     let remoteHasManager = false
@@ -147,6 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    if (!mounted.current) return
     setHasAnyManager(localHasManager || remoteHasManager)
     setAuthMode(cloudReachable ? 'cloud_neon' : 'local_offline')
     setAuthReady(true)
@@ -174,7 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         (typeof navigator === 'undefined' || navigator.onLine !== false)
       ) {
         try {
-          const resp = await window.fetch('/api/auth/register', {
+          const resp = await fetchWithSession('/api/auth/register', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -189,6 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               password: params.password,
               role: params.role,
               salonName: params.salonName,
+              rememberMe,
             }),
           })
 
@@ -242,7 +211,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             )
           }
         } catch (err) {
-          if (err instanceof ServerBusinessAuthError) {
+          if (err instanceof ServerBusinessAuthError || (err instanceof Error && err.name === 'WorkspaceTenantMismatchError')) {
             throw err
           }
         }
@@ -295,6 +264,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({
               email: params.email,
               password: params.password,
+              rememberMe,
             }),
           })
 
@@ -324,36 +294,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             return data.user
           }
 
-          if (resp.status === 403 && data.code === 'ACCOUNT_DISABLED') {
-            throw new ServerBusinessAuthError(
-              data.message ?? 'Ce compte a été désactivé par le Gérant.',
-            )
+          if (![503, 502, 404].includes(resp.status) && data.code !== 'NETWORK_UNREACHABLE' && data.code !== 'DB_NOT_CONFIGURED') {
+            throw new ServerBusinessAuthError(data.message ?? 'Connexion refusée par le serveur.')
           }
 
-          if (resp.status === 401) {
-            try {
-              const localFallback = await syncWithRepo(async (repo) => {
-                const authed = await repo.authenticateLocalUserAccount({
-                  email: params.email,
-                  password: params.password,
-                })
-                await repo.purgeLegacyMockData()
-                return authed
-              })
-              setCurrentUser(localFallback)
-              setSessionToken(null)
-              persistAuthSession(localFallback, null, rememberMe)
-              return localFallback
-            } catch (localErr) {
-              throw new ServerBusinessAuthError(
-                localErr instanceof Error
-                  ? localErr.message
-                  : 'Adresse e-mail ou mot de passe incorrect.',
-              )
-            }
-          }
         } catch (err) {
-          if (err instanceof ServerBusinessAuthError) {
+          if (err instanceof ServerBusinessAuthError || (err instanceof Error && err.name === 'WorkspaceTenantMismatchError')) {
             throw err
           }
         }
@@ -383,15 +329,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const logout = useCallback(() => {
-    clearPersistedAuthSession()
+    setReadyScope(null)
+    void activateWorkspace?.(null)
+    void logoutServerSession()
     setCurrentUser(null)
     setSessionToken(null)
+  }, [activateWorkspace])
+
+  useEffect(() => {
+    const update = () => {
+      if (!mounted.current) return
+      const stored = readStoredSession()
+      setSessionToken(stored.token)
+      setCurrentUser(stored.user)
+    }
+    const renew = () => { if (document.visibilityState !== 'hidden') void currentAccessToken() }
+    window.addEventListener(SESSION_UPDATED_EVENT, update)
+    window.addEventListener('storage', update)
+    window.addEventListener('focus', renew)
+    document.addEventListener('visibilitychange', renew)
+    const timer = window.setInterval(renew, 30_000)
+    renew()
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener(SESSION_UPDATED_EVENT, update)
+      window.removeEventListener('storage', update)
+      window.removeEventListener('focus', renew)
+      document.removeEventListener('visibilitychange', renew)
+    }
   }, [])
 
   const value = useMemo(
     () => ({
       authEnforced: true,
-      authReady,
+      authReady: authReady && readyScope === scope,
       hasAnyManager,
       authMode,
       currentUser,
@@ -404,6 +375,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }),
     [
       authReady,
+      readyScope,
+      scope,
       hasAnyManager,
       authMode,
       currentUser,
@@ -416,5 +389,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ],
   )
 
+  if (workspaceError) return <p role="alert">{workspaceError}</p>
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

@@ -46,6 +46,7 @@ export class SalonProDatabase extends Dexie {
   recurringExpenses!: Table<RecurringExpenseTemplate, string>
   users!: Table<SalonUserAccount, string>
   correctionLogs!: Table<CorrectionLog, string>
+  workspaceMeta!: Table<{ key: string; value: string }, string>
   syncTombstones!: Table<PersistedSyncTombstone, string>
 
   constructor(dbName = 'SalonProLocalDB') {
@@ -265,6 +266,8 @@ export class SalonProDatabase extends Dexie {
           await tx.table('syncTombstones').bulkPut(tombstones)
         }
       })
+
+    this.version(5).stores({ workspaceMeta: 'key' })
   }
 }
 

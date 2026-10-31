@@ -546,13 +546,13 @@ export function MainLayout() {
               )}
             </button>
 
-            {cloudSync.syncEnabled && (
+            {(cloudSync.syncEnabled || auth.sessionToken) && (
               <button
                 type="button"
                 onClick={() => {
                   if (
-                    cloudSync.status === 'unauthorized' ||
-                    cloudSync.status === 'error'
+                    isManager && (cloudSync.status === 'unauthorized' ||
+                    cloudSync.status === 'error')
                   ) {
                     navigate('/settings')
                   } else {
