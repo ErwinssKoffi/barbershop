@@ -2,12 +2,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { applicationPwaPlugin } from './server/pwaBuild.ts'
 import { salonNeonApiPlugin } from './server/viteApiPlugin.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  plugins: [react(), salonNeonApiPlugin()],
+  plugins: [react(), salonNeonApiPlugin(), applicationPwaPlugin()],
   resolve: {
     alias: {
       cn: path.resolve(__dirname, './src/lib/utils.ts'),

@@ -367,7 +367,16 @@ function AppPreferencesForm({
 }
 
 export function SettingsPage() {
-  const { state, mutate } = useSalonStore()
+  const { state, mutate, syncWithRepo } = useSalonStore()
+  const [archivedSyncConflicts, setArchivedSyncConflicts] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    void syncWithRepo((repo) => repo.exportCloudConflicts()).then((journal) => {
+      if (!cancelled) setArchivedSyncConflicts((JSON.parse(journal) as unknown[]).length)
+    })
+    return () => { cancelled = true }
+  }, [syncWithRepo])
+
   const cloudSync = useCloudSync()
   const { checkServerHealth } = cloudSync
   const toast = useToast()
@@ -616,7 +625,7 @@ export function SettingsPage() {
         )}
         <div style={{ fontSize: '0.86rem', fontWeight: 600 }}>
           {cloudSync.syncEnabled
-            ? 'Mode Hybride actif : stockage local IndexedDB instantané + synchronisation multi-appareils Neon PostgreSQL.'
+            ? 'Mode Hybride actif : stockage local IndexedDB instantané + synchronisation multi-appareils PostgreSQL (Neon ou Supabase).'
             : "Version locale : les données sont enregistrées sur cet appareil. La synchronisation entre plusieurs appareils n'est pas encore activée."}
         </div>
       </div>
@@ -627,7 +636,7 @@ export function SettingsPage() {
           <TabsTrigger value="salon">Identité du salon</TabsTrigger>
           <TabsTrigger value="preferences">Préférences</TabsTrigger>
           <TabsTrigger value="categories">Catégories</TabsTrigger>
-          <TabsTrigger value="cloud">Cloud Neon</TabsTrigger>
+          <TabsTrigger value="cloud">Cloud PostgreSQL</TabsTrigger>
           <TabsTrigger value="sauvegarde">Sauvegarde &amp; Données</TabsTrigger>
         </TabsList>
 
@@ -888,11 +897,11 @@ export function SettingsPage() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <CardTitle className="text-base">
-                    Synchronisation Hybride Neon PostgreSQL
+                    Synchronisation Hybride PostgreSQL
                   </CardTitle>
                   <CardDescription className="text-sm">
                     Fonctionnement local instantané (IndexedDB) + réplication
-                    multi-appareils vers votre base PostgreSQL Neon
+                    multi-appareils vers votre base PostgreSQL Neon ou Supabase
                   </CardDescription>
                 </div>
                 <Badge
@@ -991,6 +1000,17 @@ export function SettingsPage() {
                 </div>
               </div>
 
+              {archivedSyncConflicts > 0 && <p role="status">{archivedSyncConflicts} version(s) locale(s) écartée(s) ou tentative(s) refusée(s) sont conservées dans le journal. Consultez-le avant de ressaisir une opération.</p>}
+              <Button variant="outline" onClick={() => void (async () => {
+                const journal = await syncWithRepo((repo) => repo.exportCloudConflicts())
+                const url = URL.createObjectURL(new Blob([journal], { type: 'application/json' }))
+                const link = document.createElement('a')
+                link.href = url; link.download = `salon-pro-conflits-${todayISO()}.json`; link.click()
+                URL.revokeObjectURL(url)
+              })()}>
+                Télécharger le journal des conflits
+              </Button>
+
               {cloudSync.lastError && (
                 <div
                   style={{
@@ -1060,7 +1080,7 @@ export function SettingsPage() {
                     <Cloud size={15} />
                     {cloudSync.syncEnabled
                       ? 'Mettre à jour & Synchroniser'
-                      : 'Activer la synchronisation Neon'}
+                      : 'Activer la synchronisation Cloud'}
                   </Button>
 
                   {cloudSync.syncEnabled && (

@@ -10,7 +10,10 @@
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:migrate": "node --experimental-strip-types server/migrate.ts",
+    "db:schema": "node --experimental-strip-types server/exportSchema.ts",
+    "db:schema:check": "node --experimental-strip-types server/exportSchema.ts --check"
   },
   "dependencies": {
     "dexie": "^4.4.2",
@@ -24,6 +27,7 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.13",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

@@ -379,6 +379,7 @@ export interface RecurringExpenseTemplate {
 export type UserRole = 'manager' | 'cashier'
 
 export interface SalonUserAccount {
+  tenantId?: string
   id: string
   fullName: string
   email: string

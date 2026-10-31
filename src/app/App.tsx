@@ -1,3 +1,4 @@
+import { PwaStatus } from '../components/layout/PwaStatus'
 import { MotionConfig } from 'framer-motion'
 import { BrowserRouter } from 'react-router-dom'
 import { AuthProvider } from '../contexts/AuthProvider'
@@ -12,6 +13,7 @@ export function App() {
         <SalonStoreProvider>
           <BrowserRouter>
             <AuthProvider>
+              <PwaStatus />
               <AppRoutes />
             </AuthProvider>
           </BrowserRouter>

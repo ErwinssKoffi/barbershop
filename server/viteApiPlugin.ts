@@ -15,14 +15,14 @@ export function salonNeonApiPlugin(): Plugin {
           next()
           return
         }
-        void handleSalonApiRequest(req, res).catch((err) => {
+        void handleSalonApiRequest(req, res).catch(() => {
           res.statusCode = 500
           res.setHeader('Content-Type', 'application/json; charset=utf-8')
           res.end(
             JSON.stringify({
               ok: false,
               code: 'UNEXPECTED_ERROR',
-              message: err instanceof Error ? err.message : 'Erreur serveur',
+              message: 'Erreur interne du serveur.',
             }),
           )
         })
@@ -34,14 +34,14 @@ export function salonNeonApiPlugin(): Plugin {
           next()
           return
         }
-        void handleSalonApiRequest(req, res).catch((err) => {
+        void handleSalonApiRequest(req, res).catch(() => {
           res.statusCode = 500
           res.setHeader('Content-Type', 'application/json; charset=utf-8')
           res.end(
             JSON.stringify({
               ok: false,
               code: 'UNEXPECTED_ERROR',
-              message: err instanceof Error ? err.message : 'Erreur serveur',
+              message: 'Erreur interne du serveur.',
             }),
           )
         })

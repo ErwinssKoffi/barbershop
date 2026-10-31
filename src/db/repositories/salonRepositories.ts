@@ -1,3 +1,5 @@
+import { CLOUD_LOCAL_TABLES, cloudRows, stableCloudValue, type CloudDeltaPage } from '../../domain/cloudDelta'
+import { isStrongPassword, PASSWORD_POLICY_MESSAGE } from '../../domain/passwordPolicy'
 import type { Table } from 'dexie'
 import {
   calculateCashSessionSummary,
@@ -181,7 +183,7 @@ export interface LocalSyncTombstone {
 const CURRENT_DATA_HYGIENE_VERSION = 2
 
 export class SalonRepositoryHub {
-  private readonly database: SalonProDatabase
+  public readonly database: SalonProDatabase
   public readonly servicesRepo: DexieTableRepository<ServiceCatalogItem>
   public readonly employeesRepo: DexieTableRepository<Employee>
   public readonly revenuesRepo: DexieTableRepository<RevenueEntry>
@@ -2929,13 +2931,112 @@ export class SalonRepositoryHub {
   /**
    * Prépare l'enveloppe de synchronisation vers Neon PostgreSQL.
    */
+  public async buildCloudDeltaEnvelope() {
+    const envelope = await this.buildCloudSyncEnvelope()
+    const checkpoint = await this.database.workspaceMeta.get('syncCursor')
+    const baseline = JSON.parse((await this.database.workspaceMeta.get('syncBaseline'))?.value ?? '{}') as Record<string, string>
+    const payload: Record<string, unknown> = { format: envelope.payload.format, exportedAt: envelope.payload.exportedAt }
+    for (const key of CLOUD_LOCAL_TABLES) {
+      const dirty = cloudRows(envelope.payload, key).filter((row) => baseline[`${key}:${row.id}`] !== stableCloudValue(row))
+      payload[key] = key === 'salon' || key === 'settings' ? dirty[0] : dirty
+    }
+    return { payload: payload as unknown as SalonBackupPayload, tombstones: envelope.tombstones.filter((item) => baseline[`tombstone:${item.entityType}:${item.entityId}`] !== item.deletedAt), ...(checkpoint ? { cursor: Number(checkpoint.value) } : {}) }
+  }
+
+  public async cloudSyncCursor(): Promise<number | undefined> {
+    const value = await this.database.workspaceMeta.get('syncCursor')
+    return value ? Number(value.value) : undefined
+  }
+
+  public async exportCloudConflicts(): Promise<string> {
+    return (await this.database.workspaceMeta.get('syncConflicts'))?.value ?? '[]'
+  }
+
+  public async mergeCloudDelta(page: CloudDeltaPage, sent?: Partial<SalonBackupPayload>, sentTombstones?: LocalSyncTombstone[]): Promise<{ conflicts: number }> {
+    if (!Number.isSafeInteger(page.cursor) || page.cursor < 0) throw new Error('Curseur Cloud invalide.')
+    let addedConflicts = 0
+    await this.database.transaction('rw', this.database.tables, async () => {
+      const checkpoint = await this.cloudSyncCursor()
+      if (checkpoint !== undefined && page.cursor < checkpoint) throw new Error('Réponse Cloud périmée.')
+      const baseline = JSON.parse((await this.database.workspaceMeta.get('syncBaseline'))?.value ?? '{}') as Record<string, string>
+      const conflicts = JSON.parse(await this.exportCloudConflicts()) as unknown[]
+      const archive = (table: string, id: string, code: string, local: unknown) => {
+        conflicts.push({ table, id, code, local, cursor: page.cursor, at: new Date().toISOString() }); addedConflicts++
+      }
+      const entityKeys: Record<string, typeof CLOUD_LOCAL_TABLES[number]> = { service: 'services', employee: 'employees', revenue: 'revenues', expense: 'expenses', recurring_expense: 'recurringExpenses', cash_session: 'cashSessions', cash_movement: 'cashMovements', advance: 'advances', bonus: 'bonuses', salary_payment: 'salaryPayments', product: 'products', stock_movement: 'stockMovements', budget: 'budgets', correction_log: 'correctionLogs' }
+      for (const rejected of page.rejected ?? []) {
+        if (!CLOUD_LOCAL_TABLES.includes(rejected.table)) continue
+        const local = await this.database.table(rejected.table).get(rejected.id)
+        const attemptedDelete = sentTombstones?.find((item) => item.entityId === rejected.id && entityKeys[item.entityType] === rejected.table)
+        archive(rejected.table, rejected.id, rejected.code, local ?? attemptedDelete)
+        if (attemptedDelete) await this.database.syncTombstones.delete(`${attemptedDelete.entityType}:${attemptedDelete.entityId}`)
+        // Une tentative interdite n'est pas renvoyée indéfiniment sans modification locale explicite.
+        if (rejected.code.includes('FORBIDDEN') && local) baseline[`${rejected.table}:${rejected.id}`] = stableCloudValue(local)
+      }
+      for (const key of CLOUD_LOCAL_TABLES) {
+        const records = [...(page.payload ? cloudRows(page.payload, key) : []), ...(page.changes?.[key] ?? [])]
+        for (const raw of records) {
+          if (!raw || typeof raw !== 'object' || !('id' in raw) || typeof raw.id !== 'string') throw new Error('Delta Cloud invalide.')
+          const row = raw as { id: string }
+          const table = this.database.table(key)
+          const local = await table.get(row.id)
+          const canonical = stableCloudValue(row)
+          const entityType = Object.entries(entityKeys).find(([, table]) => table === key)?.[0] as LocalSyncTombstoneType | undefined
+          const pendingDelete = entityType && await this.database.syncTombstones.get(`${entityType}:${row.id}`)
+          if (!local && pendingDelete) {
+            if (baseline[`tombstone:${entityType}:${row.id}`] === pendingDelete.deletedAt || baseline[`${key}:${row.id}`] === canonical) continue
+            archive(key, row.id, 'LOCAL_DELETE_REMOTE_CHANGED', pendingDelete)
+            await this.database.syncTombstones.delete(pendingDelete.id)
+          }
+          const sentRow = sent && cloudRows(sent, key).find((item) => item.id === row.id)
+          const acknowledgedValue = (value: object) => stableCloudValue(key === 'stockMovements'
+            ? Object.fromEntries(Object.entries(value).filter(([field]) => !['quantityAfter', 'unitCost', 'createdAt'].includes(field))) : value)
+          const ack = sentRow && acknowledgedValue(sentRow) === acknowledgedValue(row)
+          const editedDuringPush = sentRow && local && stableCloudValue(sentRow) !== stableCloudValue(local)
+          const dirty = local && baseline[`${key}:${row.id}`] !== stableCloudValue(local)
+          if (dirty && stableCloudValue(local) !== canonical && ack && editedDuringPush) {
+            // Saisie faite pendant le push : elle reste dans la file des modifications locales.
+          } else {
+            if (dirty && stableCloudValue(local) !== canonical && !ack && !(page.rejected ?? []).some((item) => item.table === key && item.id === row.id)) archive(key, row.id, 'REMOTE_CHANGED', local)
+            await table.put(row)
+          }
+          baseline[`${key}:${row.id}`] = canonical
+        }
+      }
+      const deletions = [...(page.deleted ?? []), ...(page.tombstones ?? []).flatMap((item) => entityKeys[item.entityType] ? [{ table: entityKeys[item.entityType], id: item.entityId }] : [])]
+      for (const item of deletions) {
+        if (!CLOUD_LOCAL_TABLES.includes(item.table)) throw new Error('Suppression Cloud invalide.')
+        const table = this.database.table(item.table)
+        const local = await table.get(item.id)
+        if (local && baseline[`${item.table}:${item.id}`] !== stableCloudValue(local)) archive(item.table, item.id, 'REMOTE_DELETED', local)
+        await table.delete(item.id)
+        delete baseline[`${item.table}:${item.id}`]
+        const entityType = Object.entries(entityKeys).find(([, table]) => table === item.table)?.[0] as LocalSyncTombstoneType | undefined
+        if (entityType) {
+          const deletedAt = page.tombstones?.find((tb) => tb.entityType === entityType && tb.entityId === item.id)?.deletedAt ?? new Date().toISOString()
+          await this.database.syncTombstones.put({ id: `${entityType}:${item.id}`, entityType, entityId: item.id, deletedAt })
+          baseline[`tombstone:${entityType}:${item.id}`] = deletedAt
+        }
+      }
+      for (const item of sentTombstones ?? []) {
+        const stored = await this.database.syncTombstones.get(`${item.entityType}:${item.entityId}`)
+        if (stored) baseline[`tombstone:${item.entityType}:${item.entityId}`] = stored.deletedAt
+      }
+      await this.database.workspaceMeta.bulkPut([
+        { key: 'syncCursor', value: String(page.cursor) }, { key: 'syncBaseline', value: JSON.stringify(baseline) },
+        { key: 'syncConflicts', value: JSON.stringify(conflicts) },
+      ])
+    })
+    await this.purgeLegacyMockData()
+    return { conflicts: addedConflicts }
+  }
+
   public async buildCloudSyncEnvelope(): Promise<{
     payload: SalonBackupPayload
     tombstones: LocalSyncTombstone[]
   }> {
-    const [state, users, persistedTombstones] = await Promise.all([
+    const [state, persistedTombstones] = await Promise.all([
       this.readFullState(),
-      this.database.users.toArray(),
       this.database.syncTombstones.toArray(),
     ])
     return {
@@ -2958,7 +3059,6 @@ export class SalonRepositoryHub {
         stockMovements: state.stockMovements,
         budgets: state.budgets,
         recurringExpenses: state.recurringExpenses,
-        users,
         correctionLogs: state.correctionLogs,
       },
       tombstones: persistedTombstones.map((tb) => ({
@@ -3072,24 +3172,7 @@ export class SalonRepositoryHub {
         )
         await mergeByUpdatedAt(this.database.budgets, remote.budgets)
 
-        for (const usr of remote.users ?? []) {
-          const curById = await this.database.users.get(usr.id)
-          const curByEmail = await this.database.users
-            .where('email')
-            .equals(usr.email.trim().toLowerCase())
-            .first()
-          const cur = curById ?? curByEmail
-          if (!cur || usr.updatedAt > cur.updatedAt) {
-            if (cur && cur.id !== usr.id) {
-              await this.database.users.delete(cur.id)
-            }
-            await this.database.users.put({
-              ...usr,
-              email: usr.email.trim().toLowerCase(),
-            })
-            mergedCount += 1
-          }
-        }
+        // Ne jamais accepter des identités ni des droits depuis la synchronisation.
 
         await mergeImmutableById(
           this.database.stockMovements,
@@ -3266,12 +3349,37 @@ export class SalonRepositoryHub {
     return rows.some((u) => u.isActive && u.role === 'manager')
   }
 
+  public async assertCloudWorkspace(tenantId: unknown): Promise<void> {
+    const binding = await this.database.workspaceMeta.get('cloudTenantId')
+    if (typeof tenantId !== 'string' || !binding || binding.value !== tenantId) {
+      throw new Error('Reconnectez-vous au compte Cloud de ce salon avant de synchroniser cet appareil.')
+    }
+  }
+
   public async cacheRemoteUserAccount(account: SalonUserAccount): Promise<void> {
+    if (account.tenantId) {
+      await this.database.transaction('rw', [this.database.workspaceMeta, this.database.users], async () => {
+        const binding = await this.database.workspaceMeta.get('cloudTenantId')
+        const accounts = await this.database.users.toArray()
+        if ((binding && binding.value !== account.tenantId) ||
+            (!binding && accounts.length > 0 && !accounts.some((user) => user.tenantId === account.tenantId || user.email.toLowerCase() === account.email.toLowerCase()))) {
+          const error = new Error('Cet appareil contient les données d’un autre salon. Utilisez un profil de navigateur distinct ; aucune donnée n’a été déplacée.')
+          error.name = 'WorkspaceTenantMismatchError'
+          throw error
+        }
+        await this.database.workspaceMeta.put({ key: 'cloudTenantId', value: account.tenantId! })
+      })
+    }
     const email = account.email.trim().toLowerCase()
     const existingByEmail = await this.database.users
       .where('email')
       .equals(email)
       .first()
+    if (existingByEmail && !existingByEmail.tenantId && account.tenantId && existingByEmail.role === account.role) {
+      const previous = JSON.stringify(['local', existingByEmail.id, existingByEmail.role, 'v1'])
+      const next = JSON.stringify([account.tenantId, account.id, account.role, 'v1'])
+      await this.database.workspaceMeta.put({ key: `scopePredecessor:${next}`, value: previous })
+    }
     if (existingByEmail && existingByEmail.id !== account.id) {
       await this.database.users.delete(existingByEmail.id)
     }
@@ -3304,8 +3412,8 @@ export class SalonRepositoryHub {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new Error('Veuillez saisir une adresse e-mail valide.')
     }
-    if (password.length < 6) {
-      throw new Error('Le mot de passe doit contenir au moins 6 caractères.')
+    if (!isStrongPassword(password)) {
+      throw new Error(PASSWORD_POLICY_MESSAGE)
     }
 
     const existing = await this.database.users
@@ -3332,6 +3440,7 @@ export class SalonRepositoryHub {
     const nowIso = new Date().toISOString()
     const passwordHash = await hashPasswordPBKDF2(password)
     const account: SalonUserAccount = {
+      tenantId: (await this.database.workspaceMeta.get('cloudTenantId'))?.value,
       id: `usr-${crypto.randomUUID()}`,
       fullName,
       email,
@@ -3438,6 +3547,10 @@ export class SalonRepositoryHub {
     if (!matchedAccount) {
       throw new Error('Identifiant ou mot de passe incorrect.')
     }
+    const binding = await this.database.workspaceMeta.get('cloudTenantId')
+    if (binding && matchedAccount.tenantId && matchedAccount.tenantId !== binding.value) {
+      throw new Error('Ce compte appartient à un autre salon que les données de cet appareil.')
+    }
     if (!matchedAccount.isActive) {
       throw new Error('Ce compte a été désactivé par le Gérant.')
     }
@@ -3479,7 +3592,7 @@ export class SalonRepositoryHub {
       this.database.tables,
       async () => {
         const preservedUsers = await this.database.users.toArray()
-        await Promise.all(this.database.tables.map((t) => t.clear()))
+        await Promise.all(this.database.tables.filter((t) => t.name !== 'workspaceMeta').map((t) => t.clear()))
         await this.database.salon.put(data.salon)
         await this.database.settings.put(
           data.settings ?? buildDefaultSettings(),
@@ -3527,7 +3640,7 @@ export class SalonRepositoryHub {
           this.database.users.toArray(),
           this.database.salon.get('salon-main'),
         ])
-        await Promise.all(this.database.tables.map((t) => t.clear()))
+        await Promise.all(this.database.tables.filter((t) => t.name !== 'workspaceMeta').map((t) => t.clear()))
         const activeManager =
           preservedUsers.find((u) => u.role === 'manager' && u.isActive) ??
           preservedUsers[0] ??

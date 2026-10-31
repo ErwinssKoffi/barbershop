@@ -1,5 +1,12 @@
+import { planCashierStock, validateCashierStockLinks } from './cashierStock.ts'
+import { AuthApiError } from './authEngine.ts'
+import { lockSyncState, parseSyncCursor, prepareSync, readSyncDelta, type SyncDelta } from './syncProtocol.ts'
+import { projectSyncRecord, canReadSync, type SyncRejection } from './syncPolicy.ts'
+import { SYNC_TABLES } from './syncSchema.ts'
+import { setTenantContext } from './tenantContext.ts'
 import type {
   AdvanceEntry,
+  UserRole,
   AppSettings,
   BonusEntry,
   BudgetTarget,
@@ -27,7 +34,7 @@ import {
   stripLegacyDemoFlag,
 } from '../src/domain/mockPurge.ts'
 import type { SqlPoolLike, SqlQueryable } from './neonClient.ts'
-import { NEON_SCHEMA_SQL } from './neonSchema.ts'
+import { runMigrations } from './migrations.ts'
 
 export type { SyncTombstoneEntityType }
 
@@ -58,19 +65,22 @@ const TOMBSTONE_TABLE_MAP: Record<
 }
 
 export interface CloudSyncEnvelope {
+  cursor?: number
   payload: SalonBackupPayload
   tombstones?: SyncTombstone[]
 }
 
-export interface CloudSyncResult {
+export interface CloudSyncResult extends SyncDelta {
+  rejected: SyncRejection[]
   ok: true
   syncedAt: string
   stats: {
     pushedRecords: number
+    rejectedRecords: number
     totalRemoteRecords: number
     tombstonesApplied: number
   }
-  payload: SalonBackupPayload
+  payload?: SalonBackupPayload | null
   tombstones: SyncTombstone[]
 }
 
@@ -78,7 +88,7 @@ let schemaInitializedForPool = new WeakSet<object>()
 
 export async function ensureNeonSchema(pool: SqlPoolLike): Promise<void> {
   if (schemaInitializedForPool.has(pool)) return
-  await pool.query(NEON_SCHEMA_SQL)
+  await runMigrations(pool)
   schemaInitializedForPool.add(pool)
 }
 
@@ -121,7 +131,7 @@ async function readAndPurgeMockRows<T extends { id: string }>(
       await db.query(
         `INSERT INTO sync_tombstones (entity_type, entity_id, deleted_at)
          VALUES ($1, $2, $3)
-         ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+         ON CONFLICT (tenant_id, entity_type, entity_id) DO UPDATE SET
            deleted_at = EXCLUDED.deleted_at
          WHERE EXCLUDED.deleted_at > sync_tombstones.deleted_at`,
         [entityType, row.id, nowIso],
@@ -213,7 +223,7 @@ export async function readFullCloudState(
       'budget',
       'period_month',
     ),
-    readRows<SalonUserAccount>(db, 'salon_users', 'created_at'),
+    db.query<PayloadRow<SalonUserAccount>>("SELECT payload_json FROM salon_users WHERE tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid ORDER BY created_at ASC").then((result) => result.rows.map((row) => parseJsonRow(row.payload_json))),
     readAndPurgeMockRows<CorrectionLog>(
       db,
       'correction_logs',
@@ -267,14 +277,14 @@ export async function readFullCloudState(
       await db.query(
         `INSERT INTO salon_info (id, name, address, phone, manager_name, currency, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            name = EXCLUDED.name,
            address = EXCLUDED.address,
            phone = EXCLUDED.phone,
            manager_name = EXCLUDED.manager_name,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > salon_info.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM salon_info.payload_json`,
         [
           'salon-main',
           cleaned.name,
@@ -318,7 +328,6 @@ export async function readFullCloudState(
       stockMovements: stockMovementsClean,
       budgets: budgetsClean,
       recurringExpenses: recurringClean,
-      users,
       correctionLogs: correctionLogsClean,
     },
     tombstones,
@@ -332,6 +341,8 @@ export async function readFullCloudState(
 export async function syncWithNeonDatabase(
   pool: SqlPoolLike,
   incoming: CloudSyncEnvelope,
+  tenantId: string,
+  role?: UserRole,
 ): Promise<CloudSyncResult> {
   await ensureNeonSchema(pool)
   const client = await pool.connect()
@@ -341,8 +352,19 @@ export async function syncWithNeonDatabase(
 
   try {
     await client.query('BEGIN')
+    await setTenantContext(client, tenantId)
 
-    const p = incoming.payload
+    const head = await lockSyncState(client)
+    const since = parseSyncCursor(incoming.cursor)
+    if (since !== undefined && since > head) throw new AuthApiError(409, 'CURSOR_AHEAD', 'Curseur de synchronisation en avance sur le serveur.')
+    const stockPlan = role === 'cashier' ? await planCashierStock(client, incoming, syncedAt) : undefined
+    const prepared = await prepareSync(client, stockPlan?.incoming ?? incoming, role, syncedAt)
+    if (stockPlan) {
+      if (prepared.rejected.some((item) => item.table === 'stockMovements')) throw new AuthApiError(409, 'STOCK_SYNC_REJECTED', 'Un mouvement de stock a été refusé. Aucune écriture de cet envoi n’a été enregistrée.')
+      await validateCashierStockLinks(client, stockPlan, prepared.payload.revenues ?? [], prepared.rejected)
+      prepared.payload.products = stockPlan.products
+    }
+    const p = prepared.payload
 
     // 1. SalonInfo (nettoyé de toute valeur fictive héritée)
     if (p.salon) {
@@ -354,14 +376,14 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO salon_info (id, name, address, phone, manager_name, currency, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            name = EXCLUDED.name,
            address = EXCLUDED.address,
            phone = EXCLUDED.phone,
            manager_name = EXCLUDED.manager_name,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > salon_info.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM salon_info.payload_json`,
         [
           'salon-main',
           cleanSalon.name,
@@ -381,14 +403,14 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO app_settings (id, theme, date_format, receipt_format, last_backup_exported_at, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            theme = EXCLUDED.theme,
            date_format = EXCLUDED.date_format,
            receipt_format = EXCLUDED.receipt_format,
            last_backup_exported_at = EXCLUDED.last_backup_exported_at,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > app_settings.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM app_settings.payload_json`,
         [
           'default',
           p.settings.theme,
@@ -407,12 +429,12 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO categories (id, scope, code, label, is_system, is_archived, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            label = EXCLUDED.label,
            is_archived = EXCLUDED.is_archived,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > categories.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM categories.payload_json`,
         [
           c.id,
           c.scope,
@@ -432,14 +454,14 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO services_catalog (id, name, category_code, reference_price, is_active, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            name = EXCLUDED.name,
            category_code = EXCLUDED.category_code,
            reference_price = EXCLUDED.reference_price,
            is_active = EXCLUDED.is_active,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > services_catalog.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM services_catalog.payload_json`,
         [
           s.id,
           s.name,
@@ -458,7 +480,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO employees (id, full_name, role_title, base_salary, remuneration_type, commission_enabled, commission_rate, is_active, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            full_name = EXCLUDED.full_name,
            role_title = EXCLUDED.role_title,
            base_salary = EXCLUDED.base_salary,
@@ -468,7 +490,7 @@ export async function syncWithNeonDatabase(
            is_active = EXCLUDED.is_active,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > employees.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM employees.payload_json`,
         [
           e.id,
           e.fullName,
@@ -492,7 +514,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO cash_sessions (id, opened_at, closed_at, opening_balance, theoretical_closing_balance, counted_closing_balance, discrepancy, status, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            closed_at = EXCLUDED.closed_at,
            theoretical_closing_balance = EXCLUDED.theoretical_closing_balance,
            counted_closing_balance = EXCLUDED.counted_closing_balance,
@@ -500,7 +522,7 @@ export async function syncWithNeonDatabase(
            status = EXCLUDED.status,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > cash_sessions.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM cash_sessions.payload_json`,
         [
           cs.id,
           cs.openedAt,
@@ -525,11 +547,11 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO cash_movements (id, session_id, type, amount, occurred_at, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            amount = EXCLUDED.amount,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > cash_movements.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM cash_movements.payload_json`,
         [
           cm.id,
           cm.sessionId,
@@ -550,7 +572,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO revenues (id, ticket_id, receipt_number, date, label, category_code, employee_id, amount, payment_method, is_archived, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            date = EXCLUDED.date,
            label = EXCLUDED.label,
            category_code = EXCLUDED.category_code,
@@ -560,7 +582,7 @@ export async function syncWithNeonDatabase(
            is_archived = EXCLUDED.is_archived,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > revenues.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM revenues.payload_json`,
         [
           rev.id,
           rev.ticketId ?? null,
@@ -586,7 +608,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO expenses (id, date, label, category_code, amount, payment_method, source_module, is_stock_purchase, is_archived, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            date = EXCLUDED.date,
            label = EXCLUDED.label,
            category_code = EXCLUDED.category_code,
@@ -595,7 +617,7 @@ export async function syncWithNeonDatabase(
            is_archived = EXCLUDED.is_archived,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > expenses.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM expenses.payload_json`,
         [
           exp.id,
           exp.date,
@@ -619,7 +641,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO recurring_expenses (id, label, category_code, default_amount, day_of_month, is_active, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            label = EXCLUDED.label,
            category_code = EXCLUDED.category_code,
            default_amount = EXCLUDED.default_amount,
@@ -627,7 +649,7 @@ export async function syncWithNeonDatabase(
            is_active = EXCLUDED.is_active,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > recurring_expenses.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM recurring_expenses.payload_json`,
         [
           tpl.id,
           tpl.label,
@@ -649,7 +671,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO products (id, sku, name, category_code, quantity, cost_price, sale_price, alert_threshold, usage_type, is_active, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            sku = EXCLUDED.sku,
            name = EXCLUDED.name,
            category_code = EXCLUDED.category_code,
@@ -661,7 +683,7 @@ export async function syncWithNeonDatabase(
            is_active = EXCLUDED.is_active,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > products.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM products.payload_json`,
         [
           prd.id,
           prd.sku,
@@ -686,7 +708,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO stock_movements (id, product_id, type, quantity_delta, quantity_after, unit_cost, occurred_at, created_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
+         ON CONFLICT (tenant_id, id) DO NOTHING`,
         [
           sm.id,
           sm.productId,
@@ -709,11 +731,11 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO advances (id, employee_id, period_month, amount, paid_at, is_archived, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            is_archived = EXCLUDED.is_archived,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > advances.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM advances.payload_json`,
         [
           adv.id,
           adv.employeeId,
@@ -734,7 +756,7 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO bonuses (id, employee_id, period_month, amount, created_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
+         ON CONFLICT (tenant_id, id) DO NOTHING`,
         [
           bon.id,
           bon.employeeId,
@@ -753,12 +775,12 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO salary_payments (id, employee_id, period_month, net_paid_amount, is_partial, paid_at, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            net_paid_amount = EXCLUDED.net_paid_amount,
            is_partial = EXCLUDED.is_partial,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > salary_payments.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM salary_payments.payload_json`,
         [
           sp.id,
           sp.employeeId,
@@ -780,11 +802,11 @@ export async function syncWithNeonDatabase(
       const r = await client.query(
         `INSERT INTO budgets (id, period_month, kind, category_code, planned_amount, updated_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
+         ON CONFLICT (tenant_id, id) DO UPDATE SET
            planned_amount = EXCLUDED.planned_amount,
            updated_at = EXCLUDED.updated_at,
            payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > budgets.updated_at`,
+         WHERE EXCLUDED.payload_json IS DISTINCT FROM budgets.payload_json`,
         [
           bdg.id,
           bdg.periodMonth,
@@ -798,46 +820,14 @@ export async function syncWithNeonDatabase(
       pushedRecords += r.rowCount ?? 0
     }
 
-    // 12. CorrectionLogs & Comptes Utilisateurs
-    for (const usr of p.users ?? []) {
-      const r = await client.query(
-        `INSERT INTO salon_users (id, email, full_name, phone, role, password_hash, is_active, last_login_at, created_at, updated_at, payload_json)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
-           email = EXCLUDED.email,
-           full_name = EXCLUDED.full_name,
-           phone = EXCLUDED.phone,
-           role = EXCLUDED.role,
-           password_hash = EXCLUDED.password_hash,
-           is_active = EXCLUDED.is_active,
-           last_login_at = EXCLUDED.last_login_at,
-           updated_at = EXCLUDED.updated_at,
-           payload_json = EXCLUDED.payload_json
-         WHERE EXCLUDED.updated_at > salon_users.updated_at`,
-        [
-          usr.id,
-          usr.email,
-          usr.fullName,
-          usr.phone ?? null,
-          usr.role,
-          usr.passwordHash,
-          usr.isActive,
-          usr.lastLoginAt ?? null,
-          usr.createdAt,
-          usr.updatedAt,
-          JSON.stringify(usr),
-        ],
-      )
-      pushedRecords += r.rowCount ?? 0
-    }
-
+    // Les comptes sont exclusivement gérés par les routes d’authentification.
     for (const log of (p.correctionLogs ?? []).filter(
       (x) => !isLegacyMockRecord(x),
     )) {
       const r = await client.query(
         `INSERT INTO correction_logs (id, entity_type, entity_id, action, reason, created_at, payload_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
+         ON CONFLICT (tenant_id, id) DO NOTHING`,
         [
           log.id,
           log.entityType,
@@ -852,11 +842,11 @@ export async function syncWithNeonDatabase(
     }
 
     // 13. Tombstones de suppressions définitives (budgets, modèles récurrents, prestations non utilisées)
-    for (const tb of incoming.tombstones ?? []) {
+    for (const tb of prepared.tombstones) {
       await client.query(
         `INSERT INTO sync_tombstones (entity_type, entity_id, deleted_at)
          VALUES ($1, $2, $3)
-         ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+         ON CONFLICT (tenant_id, entity_type, entity_id) DO UPDATE SET
            deleted_at = EXCLUDED.deleted_at
          WHERE EXCLUDED.deleted_at > sync_tombstones.deleted_at`,
         [tb.entityType, tb.entityId, tb.deletedAt],
@@ -874,24 +864,37 @@ export async function syncWithNeonDatabase(
       const mapping = TOMBSTONE_TABLE_MAP[tb.entity_type]
       if (!mapping) continue
       const delRes = await client.query(
-        `DELETE FROM ${mapping.table} WHERE id = $1 AND ${mapping.tsCol} <= $2`,
-        [tb.entity_id, tb.deleted_at],
+        `DELETE FROM ${mapping.table} WHERE id = $1`,
+        [tb.entity_id],
       )
       tombstonesApplied += delRes.rowCount ?? 0
     }
 
-    const merged = await readFullCloudState(client)
+    const count = await client.query<{ record_count: string | number }>('SELECT record_count FROM sync_state')
+    const merged = since === undefined ? await readFullCloudState(client) : { payload: null, tombstones: [], totalRemoteRecords: Number(count.rows[0]?.record_count ?? 0) }
+    const delta = await readSyncDelta(client, since ?? await lockSyncState(client), role)
+    for (const rejected of prepared.rejected) {
+      if (!canReadSync(rejected.table, role)) continue
+      const revision = await client.query<{ seq: string | number | null }>('SELECT max(seq) AS seq FROM sync_changes WHERE table_name = $1 AND row_id = $2', [rejected.table, rejected.id])
+      if (delta.hasMore && Number(revision.rows[0]?.seq ?? 0) > delta.cursor) continue
+      const row = await client.query<{ payload_json: unknown }>(`SELECT payload_json FROM ${SYNC_TABLES[rejected.table]} WHERE id = $1`, [rejected.id])
+      if (row.rows[0]) (delta.changes[rejected.table] ??= []).push(projectSyncRecord(rejected.table, row.rows[0].payload_json, role))
+      else delta.deleted.push({ table: rejected.table, id: rejected.id })
+    }
     await client.query('COMMIT')
 
     return {
+      ...delta,
+      rejected: prepared.rejected,
       ok: true,
       syncedAt,
       stats: {
         pushedRecords,
+        rejectedRecords: prepared.rejected.length,
         totalRemoteRecords: merged.totalRemoteRecords,
         tombstonesApplied,
       },
-      payload: merged.payload ?? p,
+      ...(since === undefined ? { payload: merged.payload } : {}),
       tombstones: merged.tombstones,
     }
   } catch (err) {

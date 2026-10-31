@@ -20,6 +20,7 @@ export interface SqlClientLike extends SqlQueryable {
 }
 
 export interface SqlPoolLike extends SqlQueryable {
+  end?(): Promise<void>
   connect(): Promise<SqlClientLike>
 }
 
@@ -41,8 +42,20 @@ export function sanitizeDatabaseUrl(raw: string | undefined): string {
 let cachedPool: pg.Pool | null = null
 let cachedUrl = ''
 
+export function resolveCloudDatabaseUrl(): string {
+  return sanitizeDatabaseUrl(process.env.SUPABASE_DATABASE_URL || process.env.DATABASE_URL)
+}
+
+export function databaseConnectionOptions(url: string): { options?: string } {
+  const host = new URL(url).hostname
+  const isSupabase = host.endsWith('.supabase.co') || host.endsWith('.supabase.com') ||
+    url === sanitizeDatabaseUrl(process.env.SUPABASE_DATABASE_URL)
+  // Le projet héberge déjà d’autres tables publiques : aucun fallback sur public.
+  return isSupabase ? { options: '-c search_path=salon_pro' } : {}
+}
+
 export function getNeonPool(explicitUrl?: string): SqlPoolLike | null {
-  const url = sanitizeDatabaseUrl(explicitUrl ?? process.env.DATABASE_URL)
+  const url = sanitizeDatabaseUrl(explicitUrl ?? resolveCloudDatabaseUrl())
   if (!url) return null
 
   if (cachedPool && cachedUrl === url) {
@@ -55,6 +68,7 @@ export function getNeonPool(explicitUrl?: string): SqlPoolLike | null {
 
   cachedPool = new Pool({
     connectionString: url,
+    ...databaseConnectionOptions(url),
     ssl: url.includes('localhost') || url.includes('127.0.0.1')
       ? false
       : { rejectUnauthorized: true },

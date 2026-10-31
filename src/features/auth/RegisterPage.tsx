@@ -1,3 +1,4 @@
+import { isStrongPassword, PASSWORD_POLICY_MESSAGE } from '../../domain/passwordPolicy'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -47,8 +48,8 @@ export function RegisterPage() {
       )
       return
     }
-    if (password.length < 6) {
-      setError('Le mot de passe doit contenir au moins 6 caractères.')
+    if (!isStrongPassword(password)) {
+      setError(PASSWORD_POLICY_MESSAGE)
       return
     }
     if (password !== confirmPassword) {
@@ -283,9 +284,9 @@ export function RegisterPage() {
                 id="reg-password"
                 type={showPassword ? 'text' : 'password'}
                 required
-                minLength={6}
+                minLength={8}
                 autoComplete="new-password"
-                placeholder="Min. 6 caract."
+                placeholder="8 caractères, lettre et chiffre"
                 className="auth-soft-input"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -323,7 +324,7 @@ export function RegisterPage() {
                 id="reg-confirm"
                 type={showPassword ? 'text' : 'password'}
                 required
-                minLength={6}
+                minLength={8}
                 autoComplete="new-password"
                 placeholder="Répéter"
                 className="auth-soft-input"

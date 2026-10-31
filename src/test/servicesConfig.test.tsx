@@ -1,3 +1,5 @@
+import { openAccountWorkspace } from '../db/accountWorkspace'
+import { filterSyncPayload } from '../../server/syncPolicy'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -188,7 +190,7 @@ describe('Configuration des prestations (3 modes au choix, catégories directes 
 
   it('permet au Gérant de choisir son mode de configuration, de gérer les catégories de prestations, et restreint le Caissier à la lecture/encaissement', async () => {
     const user = userEvent.setup()
-    const repo = new SalonRepositoryHub(
+    let repo = new SalonRepositoryHub(
       new SalonProDatabase(`SvcConfigUI_${crypto.randomUUID()}`),
     )
     await repo.ensureInitialized(false)
@@ -205,13 +207,13 @@ describe('Configuration des prestations (3 modes au choix, catégories directes 
       usageType: 'consumable',
     })
 
-    await repo.registerLocalUserAccount({
+    const manager = await repo.registerLocalUserAccount({
       fullName: 'Gérant Koffi',
       email: 'gerant@salon.ci',
       password: 'secret1234',
       role: 'manager',
     })
-    await repo.registerLocalUserAccount({
+    const cashier = await repo.registerLocalUserAccount({
       fullName: 'Caissier Aya',
       email: 'caissier@salon.ci',
       password: 'secret1234',
@@ -219,9 +221,11 @@ describe('Configuration des prestations (3 modes au choix, catégories directes 
       callerIsAuthenticatedManager: true,
     })
 
+    const identityRepo = repo
+    repo = await openAccountWorkspace(identityRepo.database, manager)
     const view = render(
       <ToastProvider>
-        <SalonStoreProvider repository={repo}>
+        <SalonStoreProvider repository={identityRepo}>
           <MemoryRouter initialEntries={['/login']}>
             <AuthProvider>
               <AppRoutes />
@@ -297,14 +301,18 @@ describe('Configuration des prestations (3 modes au choix, catégories directes 
     expect(screen.getByText('Longueur dos')).toBeInTheDocument()
     expect(screen.getByText(/1 cons\. cabine/i)).toBeInTheDocument()
 
-    // Fin de session Gérant -> Nouvelle session Caissier sur la même base persistante
+    // Fin de session Gérant -> Nouvelle session Caissier dans son espace distinct
     view.unmount()
     window.localStorage.clear()
     window.sessionStorage.clear()
 
+    // Simulate the public snapshot received from the API in the separate cashier cache.
+    const publicSnapshot = filterSyncPayload(await repo.exportBackupPayload(), 'cashier')
+    repo = await openAccountWorkspace(identityRepo.database, cashier)
+    await repo.mergeCloudDelta({ cursor: 1, hasMore: false, payload: publicSnapshot })
     const cashierView = render(
       <ToastProvider>
-        <SalonStoreProvider repository={repo}>
+        <SalonStoreProvider repository={identityRepo}>
           <MemoryRouter initialEntries={['/login']}>
             <AuthProvider>
               <AppRoutes />

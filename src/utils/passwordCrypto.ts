@@ -72,7 +72,8 @@ export async function verifyPasswordPBKDF2(
     return false
   }
   const iterations = Number.parseInt(parts[1], 10)
-  if (!Number.isFinite(iterations) || iterations < 1_000) {
+  if (!Number.isInteger(iterations) || iterations < 1_000 || iterations > 2_000_000 ||
+      !/^[a-f0-9]{32}$/i.test(parts[2]) || !/^[a-f0-9]{64}$/i.test(parts[3])) {
     return false
   }
   const salt = hexToBytes(parts[2])

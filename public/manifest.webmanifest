@@ -1,18 +1,26 @@
 {
-  "name": "Barbershop Gestion — Finances & Caisse",
-  "short_name": "Barbershop",
-  "description": "Gestion financière, caisse FCFA, salaires, stock et rapports pour Barbershop.",
+  "name": "SALON PRO — Gestion financière et administrative",
+  "short_name": "SALON PRO",
+  "description": "Caisse FCFA, gestion financière et administrative de votre salon.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#09090B",
-  "theme_color": "#10B981",
+  "background_color": "#090B0A",
+  "theme_color": "#090B0A",
   "lang": "fr",
   "icons": [
     {
-      "src": "/barber-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "id": "/",
+  "scope": "/"
 }
