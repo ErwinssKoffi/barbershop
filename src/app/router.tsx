@@ -36,6 +36,7 @@ const ExpensesPage = lazy(() =>
     default: m.ExpensesPage,
   })),
 )
+const BookingPage = lazy(() => import('../features/booking/BookingPage').then((m) => ({ default: m.BookingPage })))
 const ServicesPage = lazy(() =>
   import('../features/services/ServicesPage').then((m) => ({
     default: m.ServicesPage,
@@ -141,6 +142,7 @@ export function AppRoutes() {
                     <Route path="revenue" element={<RevenuePage />} />
                     <Route path="expenses" element={<ExpensesPage />} />
                     <Route path="services" element={<ServicesPage />} />
+                    <Route path="booking" element={<BookingPage />} />
                     <Route
                       path="employees"
                       element={

@@ -25,7 +25,7 @@ Ces deux variables **ne sont pas encore créées dans Vercel**. Préférer le ty
 
 ## Publication et recette restant à réaliser
 
-Les améliorations de cette session sont encore locales/non publiées sur la branche `arena/24f664e7-barbershop`. Relier le dépôt seul ne publie pas ces fichiers. Avant une préversion, faire valider puis publier cette branche et utiliser cette référence explicitement ; ne pas déployer automatiquement `main` en production.
+Le lot initial a été publié et fusionné dans main via la PR #3. Le lot de recette Cloud du 1er novembre est développé séparément sur `arena/d9068337-barbershop` et n’est pas encore publié. La fusion Git ne constitue pas un déploiement ni une recette Cloud. Avant une préversion, faire valider et publier la référence concernée et l’utiliser explicitement ; ne pas déployer automatiquement main en production.
 
 Après configuration privée et déploiement explicite : vérifier `/api/health`, puis une véritable connexion/authentification PostgreSQL et les routes `/api` sous HTTPS. `databaseConfigured:true` seul ne prouve pas que PostgreSQL répond. Les migrations 001–005 ont été vérifiées sur Supabase ; 006/007 restent volontaires/non appliquées, et les pilotes restent désactivés. Aucun Go de production, backup/restore ou recette multi-poste n'est acquis par la création du projet.
 
@@ -38,3 +38,23 @@ Après configuration privée et déploiement explicite : vérifier `/api/health`
 - Le précédent passage 328/335 avait sept timeouts de cinq secondes. Limitation à un worker pour limiter la contention PGlite/WASM et hachage sur petits runners. Trois vérifications de migrations absentes ont été séparées des scénarios droits/isolation qui initialisaient deux bases : chaque test conserve sa base isolée, toutes les assertions sont conservées et le délai de cinq secondes reste inchangé. Le premier passage ciblé avec un seul worker avait encore deux timeouts ; la séparation des scénarios était également nécessaire.
 
 Le déploiement et la connexion Cloud restent **non testés**, et la porte de production demeure No-Go.
+
+## Reprise du 1er novembre 2026
+
+Variables relues : les deux secrets privés restent absents ; aucune activation effectuée.
+`cloud:check` et le protocole de [recette](docs/RECETTE_CLOUD_FINANCIERE.md) sont maintenant disponibles.
+Dernière suite locale après le lot de rapprochement : **373/373 tests, 47 fichiers** (359,02 s), lint/build/schema/diff réussis. Le résultat 355/355 correspond au lot précédent.
+Cette validation locale ne remplace pas la recette hébergée ; aucun Go de production.
+
+## État connu après ajout privé des variables et lot booking
+
+Lors de la vérification consécutive à la confirmation de l’utilisateur, les variables
+SUPABASE_DATABASE_URL et SALON_AUTH_SECRET étaient présentes comme Sensitive **Production
+uniquement**, sans déchiffrement ; aucun déploiement n’existait. Les mentions d’absence
+ci-dessus décrivent les vérifications antérieures. Preview et le workspace local ne
+reçoivent pas automatiquement ces variables. Aucune connexion Node → Supabase prouvée.
+
+Le lot booking ajoute une migration **008 volontaire** et les flags serveur/UI désactivés
+par défaut ; ne pas activer les flags pour une démonstration avant la recette isolée.
+Voir [BOOKING.md](docs/BOOKING.md). Dernière validation locale : **402/402 tests, 50 fichiers**,
+379,65 s, lint/build/schema/diff réussis. Aucun déploiement ou schéma hébergé modifié.

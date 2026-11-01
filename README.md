@@ -71,3 +71,28 @@ Avant une migration ou une mise en production : sauvegarde vérifiée, répétit
 Les tests unitaires, React/Dexie et PostgreSQL embarqué ne prouvent pas les cookies HTTPS, la concurrence réelle multi-postes, le backup/restore hébergé ni la restauration après incident. Le suivi des tests reste distinct des portes Go/No-Go du cahier. La sauvegarde locale JSON, la partition Dexie et le cache PWA ne remplacent pas une sauvegarde PostgreSQL restaurée et vérifiée.
 
 Les exemples métier du cahier ne doivent pas devenir des comptes ou écritures de démonstration : seules les catégories structurelles sont initialisées ; les données réelles et comptes existants sont préservés.
+
+## Recette Cloud et financière
+
+- `npm run cloud:check` : contrôle technique en lecture seule (connexion, migrations, RLS, rôle runtime et configuration), sans divulgation de secrets.
+- `npm run cloud:check -- --financial` : contrôles supplémentaires 006/007, triggers et pilotes financiers alignés.
+- `npm run test:financial` : campagne locale des scénarios financiers/sécurité ciblés.
+
+Un contrôle technique vert n’est **pas** une approbation de production. La connexion Cloud,
+la sauvegarde/restauration et la recette sur deux appareils restent à vérifier.
+Procédure, preuves attendues et limites : [Recette Cloud et financière](docs/RECETTE_CLOUD_FINANCIERE.md).
+
+Le Gérant peut également lancer **Paramètres → Cloud PostgreSQL → Vérifier les écritures Cloud** :
+rapprochement en lecture seule des tickets canoniques et des journaux de caisse, avec états
+« sans écart détecté », « écarts » ou « incomplet ». Aucun montant corrigé automatiquement.
+Dernière validation locale de ce lot : **373/373 tests, 47 fichiers** ; recette hébergée toujours à vérifier.
+
+## Agenda interne (optionnel)
+
+Premier module de rendez-vous : agenda journalier par employé, prestations, durées saisies,
+indisponibilités, conflits de créneaux, déplacement, statuts et historique serveur.
+Gérant : gestion ; Caissier : lecture. **Pas encore de réservation publique ni de rappels.**
+Désactivé par défaut : `SALON_BOOKING_ENABLED=false`, `VITE_BOOKING_ENABLED=false`.
+Migration 008 volontaire, indépendante de 006/007 et soumise à sauvegarde/restauration
+vérifiées. Aucun rendez-vous n’est nécessaire pour vendre, aucun encaissement automatique.
+Activation et limites : [docs/BOOKING.md](docs/BOOKING.md).

@@ -54,6 +54,30 @@ export function databaseConnectionOptions(url: string): { options?: string } {
   return isSupabase ? { options: '-c search_path=salon_pro' } : {}
 }
 
+/** URL parameters must not override TLS, routing or the private schema in node-postgres. */
+export function databasePoolConfig(raw: string): pg.PoolConfig {
+  let parsed: URL
+  try {
+    parsed = new URL(sanitizeDatabaseUrl(raw))
+    if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname) throw new Error()
+  } catch {
+    throw new Error('Configuration PostgreSQL invalide.')
+  }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname.toLowerCase())
+  // pg parses query parameters after Pool options. Keep only the harmless application label.
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (key !== 'application_name') parsed.searchParams.delete(key)
+  }
+  return {
+    connectionString: parsed.toString(),
+    ...databaseConnectionOptions(sanitizeDatabaseUrl(raw)),
+    ssl: local ? false : { rejectUnauthorized: true },
+    max: 5,
+    connectionTimeoutMillis: 6000,
+    idleTimeoutMillis: 20000,
+  }
+}
+
 export function getNeonPool(explicitUrl?: string): SqlPoolLike | null {
   const url = sanitizeDatabaseUrl(explicitUrl ?? resolveCloudDatabaseUrl())
   if (!url) return null
@@ -66,16 +90,7 @@ export function getNeonPool(explicitUrl?: string): SqlPoolLike | null {
     void cachedPool.end().catch(() => {})
   }
 
-  cachedPool = new Pool({
-    connectionString: url,
-    ...databaseConnectionOptions(url),
-    ssl: url.includes('localhost') || url.includes('127.0.0.1')
-      ? false
-      : { rejectUnauthorized: true },
-    max: 5,
-    connectionTimeoutMillis: 6000,
-    idleTimeoutMillis: 20000,
-  })
+  cachedPool = new Pool(databasePoolConfig(url))
   cachedUrl = url
   return cachedPool
 }

@@ -370,3 +370,38 @@ Prochain lot : synchronisation delta serveur-autoritaire et autorisations par en
 - Séparation de trois vérifications de migrations absentes, auparavant couplées à la création d’une deuxième base dans les scénarios droits/isolation (historique, review et diagnostic). Pas de suppression d’assertions, de réutilisation de base entre tests ou de changement du code métier.
 - Validation finale : schema check, lint, **338/338 tests dans 43 fichiers** (383,38 s), build et diff check réussis. Journaux `.cache-vercel-resume-full-tests.log` et `.cache-vercel-resume-build.log` ; avertissement de taille des chunks non bloquant.
 - Aucun déploiement, publication Git, migration hébergée ou activation financière effectué. Les variables privées Vercel restent à renseigner, la recette Cloud et le backup/restore restent non vérifiés ; production No-Go.
+
+### 1er novembre 2026 — Lot sécurité et préparation de recette Cloud/financière
+
+- Branche active arena/d9068337-barbershop, après fusion du lot précédent (PR #3).
+- Ajout cloud:check en lecture seule : clé/configuration, connexion, registre, catalogues RLS et rôle runtime réellement activable. Profil financier : tables 006/007, triggers et alignement des pilotes. Sortie expurgée, échec fermé, aucune approbation automatique de production.
+- Durcissement TLS node-postgres : hostname exact, certificat vérifié distant, neutralisation des paramètres URL qui pourraient remplacer TLS/routage/search_path. Régressions vérifiées sur les paramètres effectifs de pg.Client sans connexion externe.
+- Instantané dotenv privé pour vérifier aussi les pilotes publics des fichiers, sans injection de VITE_* côté serveur ; timeout SQL local sur db:check.
+- Nouvelle recette financière sur deux sessions API indépendantes : ACK perdu, statut canonique, rejeu idempotent, refus Caissier, remboursement/rejeu Gérant et rapprochement recettes/espèces/stock. test:financial regroupe la campagne ciblée ; aucun transfert Wave simulé.
+- Vérifications externes en lecture seule : Supabase BarberShop sain, migrations 001–005 ; Vercel ne contient toujours que les trois pilotes désactivés. Les secrets DB/auth restent absents. Aucun changement hébergé ni déploiement.
+- Validation : npm ci audit 0, lint, **355/355 tests dans 45 fichiers** (328,44 s), build, schema check et diff check réussis. Avertissement de taille des chunks non bloquant. Journaux .cache-cloud-financial-full-tests.log et .cache-cloud-financial-build.log.
+- cloud:check réellement exécuté localement : blocked / missing_configuration, clé absente, sécurité non vérifiée ; résultat attendu, pas une connexion Cloud réussie.
+- Procédure docs/RECETTE_CLOUD_FINANCIERE.md : portes manuelles, preuves privées, restauration en environnement isolé et arrêt sécurisé. Backup/restore, HTTPS et multi-poste réels restent non vérifiés. Production No-Go ; aucune migration 006/007 hébergée.
+
+### 1er novembre 2026 — Rapprochement financier Gérant, strictement en lecture seule
+
+- Ajout POST /api/checkout/reconciliation : session serveur, Gérant actif relu dans la transaction, tenant issu du jeton, corps vide strict, quota 6/minute par compte/salon et réponse no-store.
+- Snapshot PostgreSQL REPEATABLE READ READ ONLY sous rôle runtime/RLS, timeout SQL cinq secondes, aucun verrou de lignes ni appel aux fonctions de recalcul qui écrivent ; rollback et restitution du client sur tous les chemins.
+- Six compteurs : totaux canoniques, snapshots/projections, rattachements, soldes/clôtures de caisse, mouvements orphelins et mouvements invalides. 007 absente = couverture incomplète ; 006 absente = refus sans migration. Aucun bilan historique/inventaire ou paiement externe certifié.
+- Interface Paramètres → Cloud PostgreSQL réservée au Gérant : lancement explicite, rapport volatile horodaté, portée expliquée, aucune correction automatique. Transport de même origine/jeton capturé, rejet des réponses d’un autre salon ou d’une ancienne session, validation des compteurs et de la cohérence du statut.
+- 18 tests ajoutés : PostgreSQL réel PGlite (11) et interface/transport (7), dont refus natif READ ONLY d’une écriture injectée, corruption privilégiée uniquement sur fixtures jetables, clôture, accès/isolation et quota. Toutes les protections métier de production sont conservées.
+- Validation complète : **373/373 tests, 47 fichiers**, 359,02 s ; lint/build/schema/diff verts. Journaux .cache-reconciliation-full-tests.log et .cache-reconciliation-build.log. Avertissement de taille des chunks non bloquant.
+- Pas de déploiement, migration hébergée ou activation financière. Les prérequis privés et les preuves de restauration/recette Cloud du lot précédent restent requis ; production No-Go. Pas de nouvelle certification de connectivité hébergée.
+
+### 1er novembre 2026 — Booking lot 1 : agenda interne optionnel
+
+- Agenda authentifié `/booking`, navigation conditionnée par VITE_BOOKING_ENABLED=true. Lecture par compte actif, gestion réservée au Gérant. Aucun catalogue ou rendez-vous prérempli.
+- API POST list/create/update : tenant issu de la session, contrôle d’appartenance/rôle, limite de débit, plages de consultation bornées et indicateur de troncature. Pas de réservation publique dans ce lot.
+- Création idempotente (clé/hash/acteur), snapshots employé/prestation, durée manuelle 5–480 minutes ; pauses/indisponibilités sur le même agenda. Verrou transactionnel par salon avant vérification des chevauchements, bornes adjacentes autorisées. Pas de contrainte d’exclusion couvrant une écriture SQL privilégiée hors API.
+- Déplacement avec version attendue et contrôle des conflits ; statuts Prévu/Confirmé/Arrivé/Terminé/Annulé/Absent. Aucun effacement : événements avant/après atomiques, rôle runtime sans DELETE et audit sans UPDATE/DELETE. Aucun encaissement/stock/commission créé par un rendez-vous, même terminé.
+- Migration 008_booking indépendante de 006/007 et ignorée par défaut, export optionnel supabase/optional/008_booking.sql. CLI --include-booking exige SALON_BOOKING_BACKUP_VERIFIED=true ; accord opérateur après sauvegarde/restauration réellement vérifiées. Aucun changement de la base hébergée.
+- Flags serveur/UI désactivés par défaut dans .env.example. Pas de file booking hors-ligne : erreurs conservatrices, clé gardée après échec en mémoire jusqu’à fermeture, réponse ancienne ou d’un autre salon ignorée ; relecture requise après réponse incertaine.
+- 29 tests ajoutés (11 PostgreSQL PGlite, 9 validation/snapshot SQL, 8 interface/transport, 1 opt-in migration). Vérifications d’atomicité, isolation, permissions, indisponibilités, conflits, versions, transitions, ordre du verrou et absence d’effet financier. La concurrence réelle multi-connexion PostgreSQL reste à recetter.
+- Validation complète : **402/402 tests dans 50 fichiers**, 379,65 s ; lint sans avertissement, build/schema/diff verts. Journaux .cache-booking-full-tests.log et .cache-booking-build.log ; avertissement de taille de chunks non bloquant.
+- Limites détaillées dans docs/BOOKING.md : réservation publique/rappels, horaires automatiques/fuseau salon, CRM et lien caisse restent à réaliser. Pas d’activation ou déploiement ; production No-Go.
+- État externe connu depuis la vérification précédente : secrets Vercel Sensitive présents uniquement en Production, valeurs non déchiffrées, aucun déploiement. Configuration locale/Preview et connexion réelle non vérifiées. Ne pas confondre cette présence avec une recette Cloud réussie.

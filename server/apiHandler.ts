@@ -1,3 +1,5 @@
+import { createBooking, listBookings, updateBooking } from './booking.ts'
+import { reconcileFinancialState } from './financialReconciliation.ts'
 import { diagnoseRefund } from './checkoutRefundDiagnostic.ts'
 import { searchCheckoutHistory, readCheckoutHistory } from './checkoutHistory.ts'
 import { refundCheckout, refundStatus, reviewRefund, resumeRefund } from './checkoutRefund.ts'
@@ -332,6 +334,43 @@ export async function handleSalonApiRequest(
       code: 'NOT_FOUND',
       message: `Route Auth introuvable : ${req.method} ${pathname}`,
     })
+    return true
+  }
+
+  if (['/api/booking/list','/api/booking/create','/api/booking/update'].includes(pathname)) {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour consulter les rendez-vous.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      if (pathname!=='/api/booking/list' && callerSession.role!=='manager') throw new AuthApiError(403,'BOOKING_ACCESS_DENIED','Gestion réservée au Gérant.')
+      await consumeAuthLimit(pool,'booking',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const input=await readJsonBody(req)
+      const result=pathname.endsWith('/list') ? await listBookings(pool,callerSession.tid,callerSession.uid,input)
+        : pathname.endsWith('/create') ? await createBooking(pool,callerSession.tid,callerSession.uid,input)
+        : await updateBooking(pool,callerSession.tid,callerSession.uid,input)
+      sendJson(res,200,{ok:true,tenantId:callerSession.tid,...result})
+    } catch(error) {
+      if(error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted=formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/reconciliation') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour vérifier les finances.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      if (callerSession.role !== 'manager') throw new AuthApiError(403,'RECONCILIATION_MANAGER_REQUIRED','Rapprochement réservé au Gérant actif.')
+      await consumeAuthLimit(pool,'financial-reconciliation',`${callerSession.tid}:${callerSession.uid}`,6,60)
+      const report=await reconcileFinancialState(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,report})
+    } catch(error) {
+      if(error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted=formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
     return true
   }
 
