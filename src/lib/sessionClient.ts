@@ -35,7 +35,7 @@ export function storeAuthSession(user: PublicSalonUser | null, token: string | n
   notify()
 }
 
-export function accessClaims(token: string | null): { tid?: string; exp?: number; sid?: string } | null {
+export function accessClaims(token: string | null): { uid?: string; tid?: string; exp?: number; sid?: string } | null {
   if (!token) return null
   try { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) } catch { return null }
 }

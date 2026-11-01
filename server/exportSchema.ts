@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { MIGRATIONS, MIGRATION_REGISTRY_SQL } from './migrations.ts'
 
-const snapshot = '-- Généré par npm run db:schema — ne pas modifier directement.\n' +
+const snapshot = '-- Généré par npm run db:schema — ne pas modifier directement.\n-- Inclut 006/007 optionnelles : ne pas appliquer ce snapshot sans sauvegarde/restauration vérifiées.\n' +
   `${MIGRATION_REGISTRY_SQL};\n\n` + MIGRATIONS.map(({ id, sql }) => `-- ${id}\n${sql.trim()}\n`).join('\n')
 if (process.argv.includes('--check')) {
   if (readFileSync('db/schema.sql', 'utf8') !== snapshot) {

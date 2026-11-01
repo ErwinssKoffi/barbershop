@@ -31,9 +31,17 @@ describe('Migrations PostgreSQL versionnées', () => {
     const { pool, calls, released } = migrationPool()
     await runMigrations(pool)
     await runMigrations(pool)
-    expect(calls.filter((sql) => sql.startsWith('INSERT INTO schema_migrations'))).toHaveLength(MIGRATIONS.length)
+    expect(calls.filter((sql) => sql.startsWith('INSERT INTO schema_migrations'))).toHaveLength(MIGRATIONS.filter((m) => !['006_checkout','007_checkout_refunds'].includes(m.id)).length)
     expect(calls.filter((sql) => sql === 'COMMIT')).toHaveLength(2)
     expect(released()).toBe(2)
+  })
+
+  it('exige un opt-in explicite pour appliquer 006', async () => {
+    const {pool,calls} = migrationPool()
+    await runMigrations(pool)
+    expect(calls.some((sql) => sql.includes('CREATE TABLE checkout_commands'))).toBe(false)
+    await runMigrations(pool,{includeCheckout:true})
+    expect(calls.filter((sql) => sql.startsWith('INSERT INTO schema_migrations'))).toHaveLength(MIGRATIONS.length-1)
   })
 
   it('verrouille le schéma avant de lire le registre', async () => {
@@ -51,7 +59,7 @@ describe('Migrations PostgreSQL versionnées', () => {
     expect(released()).toBe(1)
     const retryStart = calls.length
     await runMigrations(pool)
-    expect(calls.slice(retryStart).filter((sql) => sql.startsWith('INSERT INTO schema_migrations'))).toHaveLength(MIGRATIONS.length)
+    expect(calls.slice(retryStart).filter((sql) => sql.startsWith('INSERT INTO schema_migrations'))).toHaveLength(MIGRATIONS.filter((m) => !['006_checkout','007_checkout_refunds'].includes(m.id)).length)
     expect(calls.at(-1)).toBe('COMMIT')
   })
 })

@@ -37,7 +37,7 @@ export async function openAccountWorkspace(identity: SalonProDatabase, user: Pub
     legacyConflicts = (await source.workspaceMeta.get('syncConflicts'))?.value
     const result: Record<string, object[]> = {}
     for (const table of source.tables) {
-      if (table.name !== 'users' && table.name !== 'workspaceMeta') result[table.name] = await table.toArray()
+      if (table.name !== 'users' && table.name !== 'workspaceMeta' && table.name !== 'checkoutOutbox') result[table.name] = await table.toArray()
     }
     return result
   }) : {}

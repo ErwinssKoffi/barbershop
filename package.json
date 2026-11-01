@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preview": "vite preview",
+    "db:check": "node --experimental-strip-types server/checkDatabaseCli.ts",
     "db:migrate": "node --experimental-strip-types server/migrate.ts",
     "db:schema": "node --experimental-strip-types server/exportSchema.ts",
     "db:schema:check": "node --experimental-strip-types server/exportSchema.ts --check"
@@ -43,5 +44,8 @@
     "typescript": "~7.0.2",
     "vite": "^8.3.5",
     "vitest": "^4.1.4"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }

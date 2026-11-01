@@ -1,3 +1,8 @@
+import { serviceRevenueCategory } from '../../domain/revenueCategories'
+import { enqueueCheckout } from '../../db/checkoutQueue'
+import { serverCheckoutEnabled } from '../../lib/checkoutClient'
+import { CheckoutQueuePanel } from './CheckoutQueuePanel'
+import type { CheckoutCommand } from '../../domain/checkout'
 import {
   AlertTriangle,
   Lock,
@@ -8,7 +13,7 @@ import {
   Trash2,
   Unlock,
 } from 'lucide-react'
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { Badge } from '@/components/reui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
@@ -40,22 +45,6 @@ interface DraftLine {
   employeeId: string
   quantity: string
   unitPrice: string
-}
-
-function resolveServiceRevenueCategory(srv: ServiceCatalogItem): string {
-  if (
-    srv.categoryCode === 'tresses_nattes' ||
-    srv.categoryCode === 'meches_perruques'
-  ) {
-    return 'braiding_weaving'
-  }
-  if (
-    srv.categoryCode === 'coloration' ||
-    srv.categoryCode === 'soins_brushing'
-  ) {
-    return 'care_coloring'
-  }
-  return 'hair_service'
 }
 
 interface DraftConsumable {
@@ -93,6 +82,9 @@ export function CheckoutTicketModal({
 }: CheckoutTicketModalProps) {
   const { state, mutate } = useSalonStore()
   const { currentUser } = useAuth()
+  const serverMode = serverCheckoutEnabled()
+  const submitting = useRef(false)
+  const intentionKey = useRef<string | null>(null)
   const isCashier = currentUser?.role === 'cashier'
   const { openSession, openQuickCashModal } = useCashSession()
   const toast = useToast()
@@ -168,7 +160,7 @@ export function CheckoutTicketModal({
         label: matchedVariant
           ? `${srv!.name} — ${matchedVariant.label}`
           : (srv?.name ?? ''),
-        categoryCode: srv ? resolveServiceRevenueCategory(srv) : 'hair_service',
+        categoryCode: srv ? serviceRevenueCategory(srv.categoryCode) : 'hair_service',
         employeeId: '',
         quantity: '1',
         unitPrice: matchedVariant
@@ -284,7 +276,7 @@ export function CheckoutTicketModal({
     }
     const srv = activeServices.find((s) => s.id === srvId)
     if (!srv) return
-    const autoCategory = resolveServiceRevenueCategory(srv)
+    const autoCategory = serviceRevenueCategory(srv.categoryCode)
     updateLine(key, {
       serviceId: srv.id,
       serviceVariantId: '',
@@ -353,8 +345,51 @@ export function CheckoutTicketModal({
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
+    if (submitting.current) return
+    submitting.current = true
     setBusy(true)
     try {
+      if (serverMode) {
+        if (!currentUser?.tenantId) throw new Error('Connectez-vous à votre compte Cloud pour utiliser la file serveur.')
+        const whole = (value: string, name: string, minimum = 0) => {
+          const number = Number(value)
+          if (!value.trim() || !Number.isSafeInteger(number) || number < minimum) throw new Error(`${name} doit être un entier valide.`)
+          return number
+        }
+        const commandLines: CheckoutCommand['lines'] = lines.map((line) => ({
+          kind:line.kind,catalogId:line.kind === 'service' ? line.serviceId : line.productId,
+          quantity:whole(line.quantity,'Quantité',1),expectedUnitPrice:whole(line.unitPrice,'Prix'),
+          ...(line.serviceVariantId && line.kind === 'service' ? {variantId:line.serviceVariantId} : {}),
+          ...(line.employeeId ? {employeeId:line.employeeId} : {}),
+        }))
+        const total = commandLines.reduce((sum,line) => sum + line.quantity * line.expectedUnitPrice!,0)
+        if (!Number.isSafeInteger(total)) throw new Error('Total hors limite.')
+        const payments: CheckoutCommand['payments'] = []
+        if (paymentMode === 'split') {
+          for (const split of splits) {
+            if (!split.amount.trim()) continue
+            const amount = whole(split.amount,'Paiement')
+            if (!amount) continue
+            const previous = payments.find((payment) => payment.method === split.method)
+            if (previous) previous.amount += amount
+            else payments.push({method:split.method,amount})
+          }
+        } else if (total) payments.push({method:paymentMethod,amount:total})
+        if (payments.reduce((sum,payment) => sum+payment.amount,0) !== total) throw new Error('Les paiements doivent couvrir exactement le total.')
+        const cash = payments.some((payment) => payment.method === 'cash')
+        if (cash && !openSession) throw new Error('Ouvrez une caisse avant de préparer un paiement espèces.')
+        intentionKey.current ??= `checkout-${crypto.randomUUID()}`
+        const command: CheckoutCommand = {idempotencyKey:intentionKey.current,lines:commandLines,payments,expectedTotal:total,
+          ...(clientName.trim() ? {clientName:clientName.trim()} : {}),
+          ...(cash ? {cashSessionId:openSession!.id} : {}),
+          ...(cash && amountTendered.trim() ? {amountTendered:whole(amountTendered,'Espèces remises')} : {}),
+        }
+        const job = await mutate((repo) => enqueueCheckout(repo.database,currentUser,command))
+        intentionKey.current = null
+        toast.success(`Ticket en attente : ${job.idempotencyKey}. Référence provisoire ; ne recréez pas ce ticket.`)
+        onClose()
+        return
+      }
       const nowTime = new Date().toISOString().slice(11)
       const isoDate = `${date}T${nowTime}`
 
@@ -416,7 +451,7 @@ export function CheckoutTicketModal({
       )
 
       toast.success(
-        `Ticket ${result.receiptNumber} validé (${formatFCFA(result.totalAmount)}).`,
+        `Ticket ${result.receiptNumber} enregistré sur cet appareil (${formatFCFA(result.totalAmount)}). Confirmation serveur non établie.`,
       )
       onClose()
       onTicketCreated?.(result.receiptNumber)
@@ -425,6 +460,7 @@ export function CheckoutTicketModal({
         err instanceof Error ? err.message : 'Encaissement impossible.',
       )
     } finally {
+      submitting.current = false
       setBusy(false)
     }
   }
@@ -439,6 +475,8 @@ export function CheckoutTicketModal({
     >
       <form className="w-full" onSubmit={(e) => void handleSubmit(e)}>
         <FieldGroup>
+          <CheckoutQueuePanel />
+          {serverMode ? <p role="note" className="text-xs">Pilote serveur : commande en attente jusqu’à confirmation explicite. Tarifs et consommables standards recalculés par le serveur ; saisie libre, date rétroactive et notes non disponibles.</p> : <p role="note" className="text-muted-foreground text-xs">Enregistrement local : la référence est provisoire. Une synchronisation réussie ne constitue pas encore une validation serveur complète du ticket.</p>}
           {/* Alerte non bloquante lorsque la caisse espèces est fermée */}
           {cashAmountInTicket > 0 && !openSession && (
             <div
@@ -460,8 +498,7 @@ export function CheckoutTicketModal({
                 <span>
                   <strong>Aucune session de caisse ouverte :</strong> ce
                   règlement espèces ({formatFCFA(cashAmountInTicket)}) sera
-                  comptabilisé hors tiroir-caisse si vous n&apos;ouvrez pas la
-                  caisse d&apos;abord.
+                  {serverMode ? 'refusé tant que la caisse n’est pas ouverte.' : 'comptabilisé hors tiroir-caisse si vous n’ouvrez pas la caisse d’abord.'}
                 </span>
               </div>
               <Button
@@ -481,6 +518,7 @@ export function CheckoutTicketModal({
               <FieldLabel htmlFor="tkt-date">Date du ticket</FieldLabel>
               <Input
                 id="tkt-date"
+                disabled={serverMode}
                 type="date"
                 required
                 value={date}
@@ -536,7 +574,7 @@ export function CheckoutTicketModal({
                 selectedService?.variants && selectedService.variants.length > 0,
               )
               const isPriceLockedForCashier = Boolean(
-                isCashier && selectedService?.priceLocked,
+                serverMode || (isCashier && selectedService?.priceLocked),
               )
 
               return (
@@ -600,7 +638,7 @@ export function CheckoutTicketModal({
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="__manual__">
-                              Saisie libre personnalisée
+                              {serverMode ? 'Choisir une prestation catalogue' : 'Saisie libre personnalisée'}
                             </SelectItem>
                             {activeServices.map((s) => (
                               <SelectItem key={s.id} value={s.id}>
@@ -696,6 +734,7 @@ export function CheckoutTicketModal({
                         type="text"
                         required
                         placeholder="Ex. Coupe + Barbe"
+                        readOnly={serverMode}
                         value={ln.label}
                         onChange={(e) =>
                           updateLine(ln.key, { label: e.target.value })
@@ -705,6 +744,7 @@ export function CheckoutTicketModal({
                     <Field>
                       <FieldLabel>Catégorie</FieldLabel>
                       <Select
+                        disabled={serverMode}
                         value={ln.categoryCode}
                         onValueChange={(v) =>
                           updateLine(ln.key, { categoryCode: v })
@@ -767,7 +807,7 @@ export function CheckoutTicketModal({
           </div>
 
           {/* Consommables optionnels utilisés en cabine */}
-          <div className="space-y-2">
+          {serverMode ? <p className="text-xs text-muted-foreground">Les consommables standards sont dérivés du catalogue et des quantités ; aucune sortie manuelle additionnelle dans ce pilote.</p> : <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground text-xs font-medium">
                 Consommables salon utilisés en cabine (sans surfacturation client)
@@ -854,7 +894,7 @@ export function CheckoutTicketModal({
                 </Button>
               </div>
             ))}
-          </div>
+          </div>}
 
           {/* Mode de paiement : Simple ou Mixte */}
           <div
@@ -1068,6 +1108,7 @@ export function CheckoutTicketModal({
             <FieldLabel htmlFor="tkt-note">Note interne (facultatif)</FieldLabel>
             <Input
               id="tkt-note"
+              disabled={serverMode}
               type="text"
               placeholder="Précision prestation, référence Wave..."
               value={note}
@@ -1081,7 +1122,7 @@ export function CheckoutTicketModal({
             </Button>
             <Button type="submit" disabled={busy || totalAmount <= 0}>
               <Receipt size={15} />
-              Valider le ticket ({formatFCFA(totalAmount)})
+              {serverMode ? 'Mettre en attente serveur' : 'Valider le ticket'} ({formatFCFA(totalAmount)})
             </Button>
           </div>
         </FieldGroup>

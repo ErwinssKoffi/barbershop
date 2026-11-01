@@ -6,10 +6,11 @@ export const CASHIER_READ_KEYS: readonly SyncKey[] = ['salon', 'categories', 'se
 export function canReadSync(key: SyncKey, role?: UserRole): boolean { return role !== 'cashier' || CASHIER_READ_KEYS.includes(key) }
 export function canWriteSync(key: SyncKey, role?: UserRole): boolean { return role !== 'cashier' || CASHIER_SYNC_KEYS.includes(key) }
 const EMPLOYEE_PUBLIC = ['id', 'firstName', 'lastName', 'fullName', 'roleTitle', 'isActive', 'createdAt', 'updatedAt']
+const SERVICE_PUBLIC = ['id', 'name', 'categoryCode', 'referencePrice', 'description', 'durationMinutes', 'priceLocked', 'variants', 'defaultConsumables', 'isActive', 'createdAt', 'updatedAt']
 const SETTINGS_PUBLIC = ['id', 'theme', 'dateFormat', 'printHeaderNote', 'printCompact', 'receiptFormat', 'receiptFooterNote', 'serviceConfigMode', 'updatedAt']
 export function projectSyncRecord(key: SyncKey, record: unknown, role?: UserRole): unknown {
- if (role !== 'cashier' || (key !== 'employees' && key !== 'settings') || !record || typeof record !== 'object') return record
- const allowed = key === 'employees' ? EMPLOYEE_PUBLIC : SETTINGS_PUBLIC
+ if (role !== 'cashier' || (key !== 'employees' && key !== 'settings' && key !== 'services') || !record || typeof record !== 'object') return record
+ const allowed = key === 'employees' ? EMPLOYEE_PUBLIC : key === 'services' ? SERVICE_PUBLIC : SETTINGS_PUBLIC
  return Object.fromEntries(Object.entries(record).filter(([field]) => allowed.includes(field)))
 }
 export function filterSyncPayload(payload: SalonBackupPayload | null, role?: UserRole): Partial<SalonBackupPayload> | null {

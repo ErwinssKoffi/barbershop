@@ -362,6 +362,7 @@ describe('Configuration des prestations (3 modes au choix, catégories directes 
     await user.click(
       screen.getByRole('button', { name: /Valider le ticket/i }),
     )
+    expect(await screen.findByText(/enregistré sur cet appareil.*Confirmation serveur non établie/i)).toBeInTheDocument()
     await waitFor(async () => {
       const s = await repo.readFullState()
       const updatedOil = s.products.find((p) => p.id === oil.id)

@@ -1,6 +1,13 @@
 import { PGlite } from '@electric-sql/pglite'
-import { afterEach } from 'vitest'
+import { afterEach, beforeAll } from 'vitest'
 import type { SqlPoolLike, SqlQueryResult } from '../../server/neonClient'
+
+// Compile the WASM engine in fixture setup, not inside the first business assertion's 5s budget.
+// Per-test databases/migrations remain isolated; no fixture data or connection is reused.
+beforeAll(async () => {
+  const engine = new PGlite()
+  try { await engine.query('SELECT 1') } finally { await engine.close() }
+}, 15_000)
 
 const databases = new Set<PGlite>()
 afterEach(async () => {

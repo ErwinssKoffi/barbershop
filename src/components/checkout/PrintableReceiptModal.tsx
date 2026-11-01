@@ -1,3 +1,5 @@
+import type { CheckoutResult } from '../../domain/checkout'
+import { useAuth } from '../../contexts/authContext'
 import { Printer, Receipt } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/reui/badge'
@@ -11,6 +13,7 @@ import { formatDateTimeFR, formatFCFA } from '../../utils/format'
 interface PrintableReceiptModalProps {
   open: boolean
   receiptRefOrRevenueId: string | null
+  confirmedResult?: CheckoutResult
   onClose: () => void
 }
 
@@ -18,7 +21,10 @@ export function PrintableReceiptModal({
   open,
   receiptRefOrRevenueId,
   onClose,
+  confirmedResult,
 }: PrintableReceiptModalProps) {
+  const {currentUser} = useAuth()
+  const serverResult = confirmedResult?.confirmed && confirmedResult.tenantId === currentUser?.tenantId ? confirmedResult : undefined
   const { state, categoryLabel } = useSalonStore()
   const [formatOverride, setFormatOverride] = useState<ReceiptFormat | null>(
     null,
@@ -28,6 +34,7 @@ export function PrintableReceiptModal({
     formatOverride ?? state.settings.receiptFormat ?? 'thermal_80mm'
 
   const lines = useMemo<RevenueEntry[]>(() => {
+    if (serverResult) return serverResult.records.revenues
     if (!receiptRefOrRevenueId) return []
     const active = state.revenues.filter((r) => !r.isArchived)
     const direct = active.find((r) => r.id === receiptRefOrRevenueId)
@@ -46,7 +53,7 @@ export function PrintableReceiptModal({
         r.receiptNumber === receiptRefOrRevenueId,
     )
     return byTicketOrReceipt
-  }, [receiptRefOrRevenueId, state.revenues])
+  }, [receiptRefOrRevenueId, state.revenues, serverResult])
 
   const paymentSummary = useMemo(() => {
     const map = new Map<string, number>()
@@ -92,6 +99,7 @@ export function PrintableReceiptModal({
       onClose={onClose}
     >
       <div className="space-y-4">
+        <p role="note" className="no-print text-muted-foreground text-xs">{serverResult ? 'Encaissement confirmé par le serveur. Aperçu issu du résultat canonique conservé sur cet appareil.' : 'Reçu généré depuis les données de cet appareil. La synchronisation ne prouve pas une confirmation serveur complète de l’encaissement.'}</p>
         <div className="no-print flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
             <Button
@@ -180,7 +188,7 @@ export function PrintableReceiptModal({
             }}
           >
             <div className="flex justify-between">
-              <span className="text-muted-foreground">N° Reçu :</span>
+              <span className="text-muted-foreground">{serverResult ? 'Numéro serveur :' : 'Référence locale :'}</span>
               <strong className="tabular-nums">{receiptNumber}</strong>
             </div>
             <div className="flex justify-between">

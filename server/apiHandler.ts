@@ -1,3 +1,10 @@
+import { diagnoseRefund } from './checkoutRefundDiagnostic.ts'
+import { searchCheckoutHistory, readCheckoutHistory } from './checkoutHistory.ts'
+import { refundCheckout, refundStatus, reviewRefund, resumeRefund } from './checkoutRefund.ts'
+import { preflightCheckout } from './checkoutCutover.ts'
+import { checkoutStatus } from './checkoutStatus.ts'
+import { commitCheckout } from './checkoutCommit.ts'
+import { quoteCheckout } from './checkoutQuote.ts'
 import { filterSyncPayload, filterSyncTombstones } from './syncPolicy.ts'
 import { lockSyncState, parseSyncCursor, readSyncDelta } from './syncProtocol.ts'
 import { assertLiveSession, rotateSession, revokeSession } from './sessions.ts'
@@ -71,7 +78,7 @@ function extractPinFromHeaders(req: IncomingMessage): string | undefined {
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const maybePreparsed = (req as IncomingMessage & { body?: unknown }).body
-  if (maybePreparsed !== undefined && maybePreparsed !== null) {
+  if (maybePreparsed !== undefined) {
     return typeof maybePreparsed === 'string'
       ? JSON.parse(maybePreparsed)
       : maybePreparsed
@@ -325,6 +332,155 @@ export async function handleSalonApiRequest(
       code: 'NOT_FOUND',
       message: `Route Auth introuvable : ${req.method} ${pathname}`,
     })
+    return true
+  }
+
+  if (pathname === '/api/checkout/preflight') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour encaisser.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      await consumeAuthLimit(pool,'checkout-preflight',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const report = await preflightCheckout(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,report})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/history/search' || pathname === '/api/checkout/history/detail') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour consulter les tickets.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      const search=pathname.endsWith('/search')
+      await consumeAuthLimit(pool,search ? 'checkout-history-search' : 'checkout-history-detail',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const input=await readJsonBody(req)
+      const result=search ? await searchCheckoutHistory(pool,callerSession.tid,callerSession.uid,input) : await readCheckoutHistory(pool,callerSession.tid,callerSession.uid,input)
+      sendJson(res,200,{ok:true,...result})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/refund') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour encaisser.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      await consumeAuthLimit(pool,'checkout-refund',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const result = await refundCheckout(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,...result})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/refund/diagnostic') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour diagnostiquer le remboursement.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      await consumeAuthLimit(pool,'checkout-refund-diagnostic',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const diagnostic=await diagnoseRefund(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,diagnostic})
+    } catch(error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted=formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/refund/review' || pathname === '/api/checkout/refund/resume') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour contrôler la reprise.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      const review=pathname.endsWith('/review')
+      await consumeAuthLimit(pool,review ? 'checkout-refund-review' : 'checkout-refund-resume',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const input=await readJsonBody(req)
+      const result=review ? {review:await reviewRefund(pool,callerSession.tid,callerSession.uid,input)} : await resumeRefund(pool,callerSession.tid,callerSession.uid,input)
+      sendJson(res,200,{ok:true,...result})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/refund/status') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour encaisser.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      await consumeAuthLimit(pool,'checkout-refund-status',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const result = await refundStatus(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,...result})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/status') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour encaisser.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      await consumeAuthLimit(pool,'checkout-status',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const result = await checkoutStatus(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,...result})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  if (pathname === '/api/checkout/commit') {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connectez-vous pour encaisser.')
+      if (req.method !== 'POST') { sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'}); return true }
+      await consumeAuthLimit(pool,'checkout-commit',`${callerSession.tid}:${callerSession.uid}`,120,60)
+      const result = await commitCheckout(pool,callerSession.tid,callerSession.uid,await readJsonBody(req))
+      sendJson(res,200,{ok:true,...result})
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
+    return true
+  }
+
+  // Préparation uniquement : aucune écriture, réservation de stock ou confirmation de ticket.
+  if (pathname === '/api/checkout/quote') {
+    try {
+      if (!pool) throw new AuthApiError(503, 'DB_NOT_CONFIGURED', 'Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401, 'SESSION_REQUIRED', 'Connectez-vous pour préparer un ticket.')
+      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, code: 'METHOD_NOT_ALLOWED', message: 'POST requis.' }); return true }
+      await consumeAuthLimit(pool, 'checkout-quote', `${callerSession.tid}:${callerSession.uid}`, 120, 60)
+      const quote = await quoteCheckout(pool, callerSession.tid, callerSession.role, await readJsonBody(req))
+      sendJson(res, 200, { ok: true, quote })
+    } catch (error) {
+      if (error instanceof RateLimitError) res.setHeader('Retry-After', String(error.retryAfter))
+      const formatted = formatDbError(error)
+      sendJson(res, formatted.status, { ok: false, code: formatted.code, message: formatted.message })
+    }
     return true
   }
 

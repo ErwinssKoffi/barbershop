@@ -161,6 +161,8 @@ export interface TicketConsumableUsage {
 }
 
 export interface RevenueEntry {
+  reversalOfRevenueId?: string
+  reversalOfTicketId?: string
   id: string
   date: string // ISO datetime
   label: string
@@ -327,6 +329,7 @@ export type StockMovementType =
   | 'adjustment'
 
 export interface StockMovement {
+  reversalOfStockMovementId?: string
   id: string
   productId: string
   type: StockMovementType

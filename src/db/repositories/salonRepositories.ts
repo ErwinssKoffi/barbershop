@@ -564,12 +564,23 @@ export class SalonRepositoryHub {
 
     return this.database.transaction(
       'rw',
-      [this.database.cashSessions, this.database.cashMovements],
+      [this.database.cashSessions, this.database.cashMovements, this.database.checkoutOutbox],
       async () => {
         const session = await this.database.cashSessions.get(params.sessionId)
         if (!session) throw new Error('Session de caisse introuvable.')
         if (session.status === 'closed') {
           throw new Error('Cette session de caisse est déjà clôturée.')
+        }
+
+        const checkouts = (await this.database.checkoutOutbox.toArray()).filter((row) => row.command.cashSessionId === session.id)
+        for (const checkout of checkouts) {
+          if (checkout.state === 'pending') throw new Error('Des tickets espèces attendent leur confirmation. Synchronisez la file avant de clôturer cette caisse.')
+          if (checkout.state === 'confirmed') {
+            for (const movement of checkout.result?.records.cashMovements ?? []) {
+              const local = await this.database.cashMovements.get(movement.id)
+              if (!local || stableCloudValue(local) !== stableCloudValue(movement)) throw new Error('Chargez les mouvements confirmés depuis le Cloud avant de clôturer cette caisse.')
+            }
+          }
         }
 
         const mvs = await this.database.cashMovements
@@ -794,9 +805,18 @@ export class SalonRepositoryHub {
    * consommables optionnels en cabine, paiement simple ou mixte Espèces/Mobile Money,
    * décrémentation stock automatique, alimentation caisse espèces et numéro de reçu).
    */
+  private async assertLegacyRevenueAllowed(): Promise<void> {
+    const raw = await this.database.workspaceMeta.get('checkoutCutoverReport')
+    if (!raw) return
+    const report = JSON.parse(raw.value) as {mode?:string;scope?:string}
+    const scope = await this.database.workspaceMeta.get('accountScope')
+    if (report.scope === scope?.value && report.mode === 'enforced') throw new Error('Le serveur impose la caisse autoritaire. Utilisez le ticket en file serveur ; les modifications/annulations nécessitent une commande de correction, pas une réécriture locale.')
+  }
+
   public async createCheckoutTicket(
     input: CheckoutTicketInput,
   ): Promise<CheckoutTicketResult> {
+    await this.assertLegacyRevenueAllowed()
     if (!input.lines || input.lines.length === 0) {
       throw new Error('Ajoutez au moins une prestation ou un produit au ticket.')
     }
@@ -1131,6 +1151,7 @@ export class SalonRepositoryHub {
     sourceModule?: RevenueEntry['sourceModule']
     callerRole?: UserRole
   }): Promise<RevenueEntry> {
+    await this.assertLegacyRevenueAllowed()
     const check = validateRevenueInput(input)
     if (!check.valid) throw new Error(check.error)
 
@@ -1276,6 +1297,7 @@ export class SalonRepositoryHub {
     note?: string
     reason: string
   }): Promise<RevenueEntry> {
+    await this.assertLegacyRevenueAllowed()
     const check = validateRevenueInput(params)
     if (!check.valid) throw new Error(check.error)
     if (!params.reason.trim()) {
@@ -1380,6 +1402,7 @@ export class SalonRepositoryHub {
     id: string,
     reason = 'Annulation / Suppression de recette',
   ): Promise<void> {
+    await this.assertLegacyRevenueAllowed()
     await this.database.transaction(
       'rw',
       [
@@ -3592,7 +3615,8 @@ export class SalonRepositoryHub {
       this.database.tables,
       async () => {
         const preservedUsers = await this.database.users.toArray()
-        await Promise.all(this.database.tables.filter((t) => t.name !== 'workspaceMeta').map((t) => t.clear()))
+        if (await this.database.checkoutOutbox.where('state').equals('pending').count()) throw new Error('Des tickets attendent une confirmation serveur. Résolvez-les avant de remplacer ou réinitialiser ces données.')
+        await Promise.all(this.database.tables.filter((t) => t.name !== 'workspaceMeta' && t.name !== 'checkoutOutbox').map((t) => t.clear()))
         await this.database.salon.put(data.salon)
         await this.database.settings.put(
           data.settings ?? buildDefaultSettings(),
@@ -3640,7 +3664,8 @@ export class SalonRepositoryHub {
           this.database.users.toArray(),
           this.database.salon.get('salon-main'),
         ])
-        await Promise.all(this.database.tables.filter((t) => t.name !== 'workspaceMeta').map((t) => t.clear()))
+        if (await this.database.checkoutOutbox.where('state').equals('pending').count()) throw new Error('Des tickets attendent une confirmation serveur. Résolvez-les avant de remplacer ou réinitialiser ces données.')
+        await Promise.all(this.database.tables.filter((t) => t.name !== 'workspaceMeta' && t.name !== 'checkoutOutbox').map((t) => t.clear()))
         const activeManager =
           preservedUsers.find((u) => u.role === 'manager' && u.isActive) ??
           preservedUsers[0] ??

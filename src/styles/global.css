@@ -2970,3 +2970,34 @@ textarea {
   cursor: pointer;
 }
 .pwa-status button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+/* Separate portal: hide the application, print only the validated refund document. */
+@media print {
+  body.printing-refund-only > :not(#salon-refund-print-root) { display: none !important; }
+  body.printing-refund-only #salon-refund-print-root .modal-backdrop {
+    position: static !important;
+    display: block !important;
+    padding: 0 !important;
+    background: white !important;
+    overflow: visible !important;
+  }
+  body.printing-refund-only #salon-refund-print-root .modal-dialog {
+    position: static !important;
+    transform: none !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: white !important;
+    color: black !important;
+  }
+  body.printing-refund-only #salon-refund-print-root .modal-dialog > :not(.refund-receipt-content) { display: none !important; }
+  body.printing-refund-only .refund-print-sheet { color: black !important; background: white !important; font-size: 10pt; }
+  body.printing-refund-only #salon-refund-print-root[data-format='thermal_80mm'] .refund-print-sheet { width: 72mm; max-width: 72mm !important; padding: 3mm !important; }
+  body.printing-refund-only #salon-refund-print-root[data-format='a5_sheet'] .refund-print-sheet { width: 128mm; max-width: 128mm !important; padding: 5mm !important; }
+}
