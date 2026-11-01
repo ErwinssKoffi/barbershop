@@ -40,11 +40,11 @@ export async function setTenantContext(client: SqlClientLike, tenantId: string):
   if (!result.rows.length) throw new AuthApiError(403, 'TENANT_SUSPENDED', 'Ce salon est suspendu ou indisponible.')
 }
 
-export async function withTenantClient<T>(pool: SqlPoolLike, tenantId: string, work: (client: SqlClientLike) => Promise<T>): Promise<T> {
+export async function withTenantClient<T>(pool: SqlPoolLike, tenantId: string, work: (client: SqlClientLike) => Promise<T>, options: {readOnlySnapshot?:boolean} = {}): Promise<T> {
   validateTenantId(tenantId)
   const client = await pool.connect()
   try {
-    await client.query('BEGIN')
+    await client.query(options.readOnlySnapshot?'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY':'BEGIN')
     await setTenantContext(client, tenantId)
     const result = await work(client)
     await client.query('COMMIT')

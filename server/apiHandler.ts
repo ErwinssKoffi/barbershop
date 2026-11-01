@@ -1,3 +1,9 @@
+import { publishVisibilityText } from './publishProfile.ts'
+import { readVisibilityPreview } from './visibilityPreview.ts'
+import { readSubscriptionAccess } from './subscriptions.ts'
+import { readVisibilityPublication,unpublishVisibility } from './visibilityPublication.ts'
+import { readVisibilityConfig,saveVisibilityConfig } from './visibilityConfig.ts'
+import { readVisibilityDraft, saveVisibilityDraft } from './visibility.ts'
 import { createBooking, listBookings, updateBooking } from './booking.ts'
 import { reconcileFinancialState } from './financialReconciliation.ts'
 import { diagnoseRefund } from './checkoutRefundDiagnostic.ts'
@@ -334,6 +340,25 @@ export async function handleSalonApiRequest(
       code: 'NOT_FOUND',
       message: `Route Auth introuvable : ${req.method} ${pathname}`,
     })
+    return true
+  }
+
+  if (['/api/visibility/publication/publish','/api/visibility/preview/read','/api/visibility/read','/api/visibility/save','/api/visibility/config/read','/api/visibility/config/save','/api/visibility/publication/read','/api/visibility/publication/unpublish','/api/visibility/subscription/read'].includes(pathname)) {
+    try {
+      if (!pool) throw new AuthApiError(503,'DB_NOT_CONFIGURED','Base Cloud non configurée.')
+      if (!callerSession?.tid) throw new AuthApiError(401,'SESSION_REQUIRED','Connexion requise.')
+      if (req.method!=='POST') {sendJson(res,405,{ok:false,code:'METHOD_NOT_ALLOWED',message:'POST requis.'});return true}
+      if (callerSession.role!=='manager') throw new AuthApiError(403,'VISIBILITY_MANAGER_REQUIRED','Profil réservé au Gérant.')
+      assertSameOrigin(req)
+      await consumeAuthLimit(pool,'visibility',`${callerSession.tid}:${callerSession.uid}`,60,60)
+      const input=await readJsonBody(req)
+      const result=pathname.endsWith('/publication/publish')?await publishVisibilityText(pool,callerSession.tid,callerSession.uid,input):pathname.endsWith('/preview/read')?await readVisibilityPreview(pool,callerSession.tid,callerSession.uid,input):pathname.endsWith('/subscription/read')?await readSubscriptionAccess(pool,callerSession.tid,callerSession.uid,input):pathname.includes('/publication/')?(pathname.endsWith('/read')?await readVisibilityPublication(pool,callerSession.tid,callerSession.uid,input):await unpublishVisibility(pool,callerSession.tid,callerSession.uid,input)):pathname.includes('/config/')?(pathname.endsWith('/read')?await readVisibilityConfig(pool,callerSession.tid,callerSession.uid,input):await saveVisibilityConfig(pool,callerSession.tid,callerSession.uid,input)):pathname.endsWith('/read')?await readVisibilityDraft(pool,callerSession.tid,callerSession.uid,input):await saveVisibilityDraft(pool,callerSession.tid,callerSession.uid,input)
+      sendJson(res,200,{ok:true,tenantId:callerSession.tid,...result})
+    } catch(error) {
+      if(error instanceof RateLimitError) res.setHeader('Retry-After',String(error.retryAfter))
+      const formatted=formatDbError(error)
+      sendJson(res,formatted.status,{ok:false,code:formatted.code,message:formatted.message})
+    }
     return true
   }
 

@@ -1,3 +1,4 @@
+import { assertOfficialDatabaseTarget } from './officialDatabaseTarget.ts'
 import { timingSafeEqual } from 'node:crypto'
 import pg from 'pg'
 
@@ -63,6 +64,7 @@ export function databasePoolConfig(raw: string): pg.PoolConfig {
   } catch {
     throw new Error('Configuration PostgreSQL invalide.')
   }
+  assertOfficialDatabaseTarget(parsed)
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname.toLowerCase())
   // pg parses query parameters after Pool options. Keep only the harmless application label.
   for (const key of [...parsed.searchParams.keys()]) {

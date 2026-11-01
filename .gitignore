@@ -32,3 +32,9 @@ dist-ssr
 
 # Liaison locale Vercel (pas de secrets ni de métadonnées de déploiement en Git)
 .vercel/
+
+# Private platform activation commands and evidence references
+.platform-activation/
+
+# Local validation caches, temporary PostgreSQL clusters and downloaded test binaries
+.cache/

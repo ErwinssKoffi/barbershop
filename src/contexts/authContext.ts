@@ -39,6 +39,7 @@ export const MANAGER_ONLY_PREFIXES = [
   '/payroll',
   '/reports',
   '/settings',
+  '/visibility',
 ] as const
 
 export function canUserAccessPath(

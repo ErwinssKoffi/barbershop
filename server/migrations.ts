@@ -1,3 +1,17 @@
+import { PUBLISH_PROFILE_SQL } from './publishProfileSchema.ts'
+import { PUBLIC_ACCESS_ENFORCEMENT_SQL } from './publicAccessEnforcementSchema.ts'
+import { PLATFORM_ACTIVATION_SQL } from './platformActivationSchema.ts'
+import { SUBSCRIPTION_SQL } from './subscriptionSchema.ts'
+import { VISIBILITY_PUBLICATION_SQL } from './visibilityPublicationSchema.ts'
+import { VISIBILITY_EDITOR_SQL } from './visibilityEditorSchema.ts'
+import { PROFILE_DETAILS_SQL } from './profileDetailsSchema.ts'
+import { SCHEDULE_BLOCKS_SQL } from './scheduleBlocksSchema.ts'
+import { APPOINTMENT_SERVICES_SQL } from './appointmentServicesSchema.ts'
+import { NOTIFICATION_SQL } from './notificationSchema.ts'
+import { MEDIA_SQL } from './mediaSchema.ts'
+import { PUBLIC_CATALOG_SQL } from './publicCatalogSchema.ts'
+import { SCHEDULING_SQL } from './schedulingSchema.ts'
+import { MARKETPLACE_SQL } from './marketplaceSchema.ts'
 import { BOOKING_SQL } from './bookingSchema.ts'
 import { REFUND_SQL } from './checkoutRefundSchema.ts'
 import { CHECKOUT_SQL } from './checkoutSchema.ts'
@@ -29,10 +43,29 @@ export const MIGRATIONS = [
   { id: '006_checkout', sql: CHECKOUT_SQL },
   { id: '007_checkout_refunds', sql: REFUND_SQL },
   { id: '008_booking', sql: BOOKING_SQL },
+  { id: '009_marketplace_profiles', sql: MARKETPLACE_SQL },
+  { id: '010_marketplace_scheduling', sql: SCHEDULING_SQL },
+  { id: '011_public_catalog', sql: PUBLIC_CATALOG_SQL },
+  { id: '012_marketplace_media', sql: MEDIA_SQL },
+  { id: '013_notification_outbox', sql: NOTIFICATION_SQL },
+  { id: '014_appointment_services', sql: APPOINTMENT_SERVICES_SQL },
+  { id: '015_schedule_blocks', sql: SCHEDULE_BLOCKS_SQL },
+  { id: '016_profile_details', sql: PROFILE_DETAILS_SQL },
+  { id: '017_visibility_editor', sql: VISIBILITY_EDITOR_SQL },
+  { id: '018_visibility_unpublish', sql: VISIBILITY_PUBLICATION_SQL },
+  { id: '019_saas_subscriptions', sql: SUBSCRIPTION_SQL },
+  { id: '020_platform_activation', sql: PLATFORM_ACTIVATION_SQL },
+  { id: '021_public_access_enforcement', sql: PUBLIC_ACCESS_ENFORCEMENT_SQL },
+  { id: '022_publish_profile_text', sql: PUBLISH_PROFILE_SQL },
 ] as const
 
 /** Un seul client et verrou transactionnel : pas de migration concurrente entre instances. */
-export async function runMigrations(pool: SqlPoolLike, options: { includeCheckout?: boolean; includeRefunds?:boolean; includeBooking?:boolean } = {}): Promise<void> {
+export async function runMigrations(pool: SqlPoolLike, options: { includeCheckout?: boolean; includeRefunds?:boolean; includeBooking?:boolean; includeMarketplace?:boolean; includeScheduling?:boolean; includePublicCatalog?:boolean; includeMedia?:boolean; includeNotifications?:boolean; includeAppointmentServices?:boolean; includeScheduleBlocks?:boolean; includeProfileDetails?:boolean; includeVisibilityEditor?:boolean; includeVisibilityPublication?:boolean; includeSubscriptions?:boolean; includePlatformActivation?:boolean; includePublicAccessEnforcement?:boolean; includeTextPublication?:boolean } = {}): Promise<void> {
+  if(options.includeTextPublication)options={...options,includePublicAccessEnforcement:true,includeVisibilityEditor:true,includeVisibilityPublication:true}
+  if(options.includePublicAccessEnforcement)options={...options,includeMarketplace:true,includePublicCatalog:true,includeMedia:true,includeSubscriptions:true}
+  if(options.includePlatformActivation)options={...options,includeSubscriptions:true}
+  if(options.includeVisibilityPublication) options={...options,includeMarketplace:true}
+  if(options.includeVisibilityEditor) options={...options,includeScheduling:true,includePublicCatalog:true,includeProfileDetails:true}
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -41,7 +74,7 @@ export async function runMigrations(pool: SqlPoolLike, options: { includeCheckou
     const result = await client.query<{ id: string }>('SELECT id FROM schema_migrations ORDER BY id')
     const applied = new Set(result.rows.map((row) => row.id))
     for (const migration of MIGRATIONS) {
-      if (applied.has(migration.id) || (migration.id === '008_booking' && !options.includeBooking) || (migration.id === '006_checkout' && !options.includeCheckout && !options.includeRefunds) || (migration.id === '007_checkout_refunds' && !options.includeRefunds)) continue
+      if (applied.has(migration.id) || (migration.id === '022_publish_profile_text' && !options.includeTextPublication) || (migration.id === '021_public_access_enforcement' && !options.includePublicAccessEnforcement) || (migration.id === '020_platform_activation' && !options.includePlatformActivation) || (migration.id === '019_saas_subscriptions' && !options.includeSubscriptions) || (migration.id === '018_visibility_unpublish' && !options.includeVisibilityPublication) || (migration.id === '017_visibility_editor' && !options.includeVisibilityEditor) || (migration.id === '016_profile_details' && !options.includeProfileDetails) || (migration.id === '015_schedule_blocks' && !options.includeScheduleBlocks) || (migration.id === '014_appointment_services' && !options.includeAppointmentServices) || (migration.id === '013_notification_outbox' && !options.includeNotifications) || (migration.id === '009_marketplace_profiles' && !options.includeMarketplace && !options.includeScheduling && !options.includePublicCatalog && !options.includeMedia && !options.includeProfileDetails) || (migration.id === '010_marketplace_scheduling' && !options.includeScheduling) || (migration.id === '011_public_catalog' && !options.includePublicCatalog) || (migration.id === '012_marketplace_media' && !options.includeMedia) || (migration.id === '008_booking' && !options.includeBooking && !options.includeAppointmentServices) || (migration.id === '006_checkout' && !options.includeCheckout && !options.includeRefunds) || (migration.id === '007_checkout_refunds' && !options.includeRefunds)) continue
       await client.query(migration.sql)
       await client.query('INSERT INTO schema_migrations (id) VALUES ($1)', [migration.id])
     }
