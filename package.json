@@ -10,11 +10,14 @@
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:public-access-concurrency": "node --experimental-strip-types scripts/testPublicAccessConcurrency.ts",
     "preview": "vite preview",
+    "db:migrations:plan": "node --experimental-strip-types server/migrationPlanCli.ts",
     "db:check": "node --experimental-strip-types server/checkDatabaseCli.ts",
     "db:migrate": "node --experimental-strip-types server/migrate.ts",
     "db:schema": "node --experimental-strip-types server/exportSchema.ts",
     "db:schema:check": "node --experimental-strip-types server/exportSchema.ts --check",
+    "platform:activate": "node --experimental-strip-types server/platformActivationCli.ts",
     "cloud:check": "node --experimental-strip-types server/checkCloudCli.ts",
     "test:financial": "vitest run src/test/financialReconciliation.test.ts src/test/financialReconciliationUi.test.tsx src/test/financialAcceptance.test.ts src/test/checkoutCommit.test.ts src/test/checkoutRefund.test.ts src/test/checkoutStatus.test.ts src/test/checkoutCutover.test.ts src/test/checkoutCutoverLocal.test.ts src/test/checkoutQueueIntegration.test.ts src/test/sessions.test.ts src/test/cloudReadiness.test.ts"
   },
@@ -27,7 +30,8 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.5",
-    "recharts": "^3.10.1"
+    "recharts": "^3.10.1",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.13",
