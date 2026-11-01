@@ -14,7 +14,9 @@
     "db:check": "node --experimental-strip-types server/checkDatabaseCli.ts",
     "db:migrate": "node --experimental-strip-types server/migrate.ts",
     "db:schema": "node --experimental-strip-types server/exportSchema.ts",
-    "db:schema:check": "node --experimental-strip-types server/exportSchema.ts --check"
+    "db:schema:check": "node --experimental-strip-types server/exportSchema.ts --check",
+    "cloud:check": "node --experimental-strip-types server/checkCloudCli.ts",
+    "test:financial": "vitest run src/test/financialReconciliation.test.ts src/test/financialReconciliationUi.test.tsx src/test/financialAcceptance.test.ts src/test/checkoutCommit.test.ts src/test/checkoutRefund.test.ts src/test/checkoutStatus.test.ts src/test/checkoutCutover.test.ts src/test/checkoutCutoverLocal.test.ts src/test/checkoutQueueIntegration.test.ts src/test/sessions.test.ts src/test/cloudReadiness.test.ts"
   },
   "dependencies": {
     "dexie": "^4.4.2",

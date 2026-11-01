@@ -2,6 +2,7 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   Award,
+  CalendarDays,
   Bell,
   ChevronLeft,
   ChevronRight,
@@ -79,6 +80,7 @@ const NAV_GROUPS: Array<{
     heading: 'ACTIVITÉ & ÉQUIPE',
     items: [
       { to: '/services', label: 'Prestations et tarifs', icon: Scissors },
+      ...(import.meta.env.VITE_BOOKING_ENABLED === 'true' ? [{ to: '/booking', label: 'Rendez-vous', icon: CalendarDays }] : []),
       { to: '/employees', label: 'Personnel', icon: Users },
       { to: '/payroll', label: 'Salaires et commissions', icon: Award },
     ],

@@ -1,3 +1,4 @@
+import { FinancialReconciliationPanel } from '../../components/checkout/FinancialReconciliationPanel'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -892,6 +893,7 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="cloud">
+          <FinancialReconciliationPanel />
           <Card>
             <CardHeader className="pb-3 border-b">
               <div className="flex flex-wrap items-center justify-between gap-2">

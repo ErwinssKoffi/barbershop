@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadServerEnvironment } from '../../server/serverEnvironment'
+import { loadServerEnvironment, resolveServerEnvironment } from '../../server/serverEnvironment'
 import { checkDatabase } from '../../server/checkDatabase'
 import type { SqlPoolLike } from '../../server/neonClient'
 import { createPostgresTestPool } from './postgresTestPool'
@@ -55,4 +55,14 @@ it('db:check reste non prêt si la baseline est incomplète',async () => {
  await pool.query('CREATE TABLE schema_migrations(id text)')
  await pool.query("INSERT INTO schema_migrations(id) VALUES('001_baseline')")
  expect((await checkDatabase(pool)).status).toBe('baseline_incomplete')
+})
+
+it('la recette lit les pilotes publics des fichiers sans les injecter ni exposer les secrets',() => {
+ const root=directory();const environment:NodeJS.ProcessEnv={VITE_SERVER_CHECKOUT:'false'}
+ writeFileSync(join(root,'.env.local'),'VITE_SERVER_CHECKOUT=true\nVITE_DATABASE_URL=must-not-be-public\n')
+ const snapshot=resolveServerEnvironment({root,environment})
+ expect(snapshot.VITE_SERVER_CHECKOUT).toBe('false')
+ expect(snapshot.VITE_DATABASE_URL).toBe('must-not-be-public')
+ loadServerEnvironment({root,environment})
+ expect(environment.VITE_DATABASE_URL).toBeUndefined()
 })

@@ -13,6 +13,7 @@ export async function checkDatabase(pool:SqlPoolLike|null):Promise<DatabaseCheck
  try {
   db=await pool.connect()
   await db.query('BEGIN READ ONLY')
+  await db.query("SET LOCAL statement_timeout = '5000ms'")
   await db.query('SELECT 1')
   const registry=(await db.query<{available:boolean}>("SELECT to_regclass('schema_migrations') IS NOT NULL AS available")).rows[0]?.available
   if(!registry) {await db.query('COMMIT');return {status:'schema_missing',...unavailable}}

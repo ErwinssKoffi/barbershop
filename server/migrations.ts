@@ -1,3 +1,4 @@
+import { BOOKING_SQL } from './bookingSchema.ts'
 import { REFUND_SQL } from './checkoutRefundSchema.ts'
 import { CHECKOUT_SQL } from './checkoutSchema.ts'
 import { SYNC_REVISIONS_SQL } from './syncSchema.ts'
@@ -27,10 +28,11 @@ export const MIGRATIONS = [
   { id: '005_sync_revisions', sql: SYNC_REVISIONS_SQL },
   { id: '006_checkout', sql: CHECKOUT_SQL },
   { id: '007_checkout_refunds', sql: REFUND_SQL },
+  { id: '008_booking', sql: BOOKING_SQL },
 ] as const
 
 /** Un seul client et verrou transactionnel : pas de migration concurrente entre instances. */
-export async function runMigrations(pool: SqlPoolLike, options: { includeCheckout?: boolean; includeRefunds?:boolean } = {}): Promise<void> {
+export async function runMigrations(pool: SqlPoolLike, options: { includeCheckout?: boolean; includeRefunds?:boolean; includeBooking?:boolean } = {}): Promise<void> {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -39,7 +41,7 @@ export async function runMigrations(pool: SqlPoolLike, options: { includeCheckou
     const result = await client.query<{ id: string }>('SELECT id FROM schema_migrations ORDER BY id')
     const applied = new Set(result.rows.map((row) => row.id))
     for (const migration of MIGRATIONS) {
-      if (applied.has(migration.id) || (migration.id === '006_checkout' && !options.includeCheckout && !options.includeRefunds) || (migration.id === '007_checkout_refunds' && !options.includeRefunds)) continue
+      if (applied.has(migration.id) || (migration.id === '008_booking' && !options.includeBooking) || (migration.id === '006_checkout' && !options.includeCheckout && !options.includeRefunds) || (migration.id === '007_checkout_refunds' && !options.includeRefunds)) continue
       await client.query(migration.sql)
       await client.query('INSERT INTO schema_migrations (id) VALUES ($1)', [migration.id])
     }
