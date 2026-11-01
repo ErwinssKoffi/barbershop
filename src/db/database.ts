@@ -1,3 +1,4 @@
+import type { QueuedCheckout } from '../domain/checkoutQueue'
 import Dexie, { type Table } from 'dexie'
 import type {
   AdvanceEntry,
@@ -46,6 +47,7 @@ export class SalonProDatabase extends Dexie {
   recurringExpenses!: Table<RecurringExpenseTemplate, string>
   users!: Table<SalonUserAccount, string>
   correctionLogs!: Table<CorrectionLog, string>
+  checkoutOutbox!: Table<QueuedCheckout, string>
   workspaceMeta!: Table<{ key: string; value: string }, string>
   syncTombstones!: Table<PersistedSyncTombstone, string>
 
@@ -268,6 +270,7 @@ export class SalonProDatabase extends Dexie {
       })
 
     this.version(5).stores({ workspaceMeta: 'key' })
+    this.version(6).stores({ checkoutOutbox: 'idempotencyKey, state, createdAt, [tenantId+actorId]' })
   }
 }
 

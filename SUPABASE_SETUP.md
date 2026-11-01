@@ -102,3 +102,40 @@ Déployer serveur et client ensemble pour que Dexie reconnaisse les champs de mo
 Le parcours Caissier exige une recette concordante pour chaque vente/consommation ; achats, ajustements, pertes et retours positifs ne passent pas par ce chemin. Une correction d’un mouvement déjà accepté nécessite un workflow Gérant, pas une modification/recréation silencieuse de l’événement.
 
 Ce renforcement ne remplace pas encore une commande d’encaissement complète : prix, variantes, total payé, splits, caisse et numérotation doivent encore être validés/recalculés côté serveur. Le chemin Gérant de synchronisation stock reste distinct. Valider les courses multi-connexions et le parcours HTTPS sur l’hébergement réellement relié à Supabase ; les tests PostgreSQL embarqués ne constituent pas cette recette.
+
+## Mise à jour — configuration d’exécution (31 octobre 2026)
+
+Vérification en lecture via le connecteur : projet BarberShop actif ; registre privé contenant `001_baseline`, `002_auth_security`, `003_tenancy`, `004_sessions`, `005_sync_revisions`. Les remarques plus haut sur une baseline sans isolation serveur décrivent l'état historique du 30 octobre : 003 ajoute désormais l'isolation runtime/RLS. Les migrations optionnelles 006/007 ne sont pas appliquées à distance. Aucun changement de schéma ou de données n'a été effectué pendant ce diagnostic.
+
+### Chargement corrigé des fichiers privés
+
+Vite (dev/preview) charge maintenant les variables **serveur** depuis le répertoire `envDir`, dans cet ordre de priorité croissante : `.env`, `.env.local`, `.env.<mode>`, `.env.<mode>.local`. Les variables déjà injectées dans le processus par l'hébergement restent prioritaires, même si elles sont vides. `envDir: false` désactive ce chargement dans Vite. Le chargeur n'ajoute pas les `VITE_*` au processus et ne retourne aucun secret à l'objet d'environnement client ; Vite conserve son propre traitement des paramètres publics.
+
+Les commandes `db:check` et `db:migrate` utilisent le même chargeur depuis la racine courante, avec `NODE_ENV` comme mode (development par défaut). Redémarrer le serveur après modification d'un fichier privé. Les fichiers `.env*` privés restent ignorés par Git ; ne jamais préfixer une URL PostgreSQL ou un secret d'authentification par `VITE_` et ne jamais les transmettre dans la conversation.
+
+### Vérification réelle, sans migration
+
+```bash
+npm run db:check
+```
+
+Cette commande ouvre une transaction **READ ONLY**, vérifie une requête PostgreSQL et le registre des migrations existant, puis rend un statut sans afficher URL, mot de passe, host ou erreur brute du pilote :
+
+- `missing_configuration` : aucune URL serveur ; code de sortie 1.
+- `check_failed` : connexion/droits/requête impossibles ; code de sortie 1.
+- `schema_missing` ou `baseline_incomplete` : base joignable mais registre/baseline non prêts ; code de sortie 1.
+- `ready` : baseline 001–005 présente ; code de sortie 0. Les indicateurs `checkoutReady` et `refundsReady` signalent séparément 006/007, sans les installer ni les activer.
+
+Ce contrôle ne prouve ni la restauration d'une sauvegarde, ni tous les droits transactionnels métier, ni l'activation des pilotes. `/api/health.databaseConfigured` signifie seulement qu'une URL/pool est renseigné, pas qu'une connexion a réussi.
+
+### Blocage externe restant
+
+Dans cet aperçu, ni `SUPABASE_DATABASE_URL` ni `DATABASE_URL` n'est configurée : `npm run db:check` renvoie réellement `missing_configuration`. Le connecteur de gestion permet la vérification du schéma, **pas l'obtention automatique d'un mot de passe PostgreSQL pour Node**. Aucun mot de passe n'a été demandé en conversation, aucun secret créé artificiellement, aucune connexion fictive installée.
+
+Pour établir la connexion d'exécution, renseigner l'URI depuis **Supabase → Connect** dans les variables privées du serveur (ou `.env.local` privé), ainsi que `SALON_AUTH_SECRET`, puis utiliser un environnement disposant de l'accès réseau au service PostgreSQL. Cet environnement sandbox ne dispose pas de cet accès sortant PostgreSQL autorisé ; fournir une URL seule n'est donc pas une garantie de connexion ici. Déployer dans un environnement réseau adapté ou faire autoriser cet accès avant de prétendre à une recette de bout en bout.
+
+Validation du correctif : 333/333 tests, 42 fichiers, 245,84 s ; lint/build/schema/diff verts. La connexion Cloud réelle de l'aperçu reste **non réalisée**, 006/007 non appliquées et production No-Go maintenue.
+
+## Projet Vercel préparé
+
+Le projet dédié `barbershop` a été créé et configuré côté Vercel, sans déploiement ni connexion de base. Les variables privées `SUPABASE_DATABASE_URL` et `SALON_AUTH_SECRET` restent à ajouter dans Vercel ; elles n'ont pas été devinées ou extraites d'autres projets. Voir [VERCEL_SETUP.md](VERCEL_SETUP.md) pour les paramètres vérifiés, les limites de validation et la publication explicite de la branche de travail avant recette.

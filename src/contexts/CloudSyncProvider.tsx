@@ -1,8 +1,12 @@
+import { fetchWithCapturedSession } from '../lib/scopedSyncClient'
+import { checkCheckoutPreflight } from '../lib/checkoutPreflight'
+import { drainCheckoutQueue } from '../db/checkoutQueue'
+import { deliverCheckout, serverCheckoutEnabled } from '../lib/checkoutClient'
 import { workspaceKey } from '../db/accountWorkspace'
 import { useAuth } from './authContext'
 import type { SalonBackupPayload } from '../domain/models'
 import type { CloudDeltaPage } from '../domain/cloudDelta'
-import { accessClaims, currentAccessToken, fetchWithSession } from '../lib/sessionClient'
+import { accessClaims, currentAccessToken } from '../lib/sessionClient'
 import {
   useCallback,
   useEffect,
@@ -126,13 +130,14 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
 
       try {
         const savedSessionToken = await currentAccessToken()
+        if (!savedSessionToken) throw new Error('Session individuelle requise pour synchroniser cet espace.')
         const tokenTenant = accessClaims(savedSessionToken)?.tid
         let conflictCount = 0
         const drain = async (sent?: Partial<SalonBackupPayload>) => {
           let cursor = await syncWithRepo((repo) => repo.cloudSyncCursor())
           if (cursor === undefined) return
           for (let pageIndex = 0; pageIndex < 100; pageIndex++) {
-            const response = await fetchWithSession(`/api/sync/pull?since=${cursor}&limit=500`)
+            const response = await fetchWithCapturedSession(`/api/sync/pull?since=${cursor}&limit=500`,savedSessionToken)
             const page = await response.json() as CloudDeltaPage & { message?: string }
             if (!response.ok) throw new Error(page.message ?? 'Lecture Cloud refusée.')
             const merged = await syncWithRepo((repo) => repo.mergeCloudDelta(page, sent))
@@ -143,13 +148,19 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           throw new Error('Synchronisation volumineuse : relancez pour continuer la pagination.')
         }
         await syncWithRepo((repo) => repo.assertCloudWorkspace(tokenTenant))
+        const beforePull = await syncWithRepo((repo) => repo.buildCloudDeltaEnvelope())
+        if (!savedSessionToken) throw new Error('Session individuelle requise pour le prévol de bascule.')
+        await checkCheckoutPreflight(beforePull,savedSessionToken,async (report) => {
+          if (!currentUser?.tenantId || currentUser.tenantId !== tokenTenant) throw new Error('Compte modifié pendant le prévol.')
+          await syncWithRepo((repo) => repo.database.workspaceMeta.put({key:'checkoutCutoverReport',value:JSON.stringify({...report,scope:workspaceKey(currentUser),checkedAt:new Date().toISOString()})}))
+        })
         await drain()
         const envelope = await syncWithRepo(async (repo) => {
           await repo.assertCloudWorkspace(tokenTenant)
           return repo.buildCloudDeltaEnvelope()
         })
 
-        const resp = await fetchWithSession('/api/sync', {
+        const resp = await fetchWithCapturedSession('/api/sync',savedSessionToken, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -208,6 +219,12 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           return false
         }
 
+        if (serverCheckoutEnabled() && currentUser?.tenantId) {
+          const delivery = await syncWithRepo((repo) => drainCheckoutQueue(repo.database,currentUser,deliverCheckout))
+          if (delivery.confirmed) await drain()
+          if (delivery.rejected && !options?.silent) toast.warning(`${delivery.rejected} ticket(s) refusé(s). Consultez la file d’encaissement ; aucune vente de remplacement n’a été créée.`)
+        }
+
         const syncedAt = data.syncedAt ?? new Date().toISOString()
         const remoteRecordsCount =
           typeof data.stats?.totalRemoteRecords === 'number'
@@ -241,7 +258,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         syncInFlightRef.current = false
       }
     },
-    [syncWithRepo, toast, prefsKey],
+    [syncWithRepo, toast, prefsKey, currentUser],
   )
 
   const syncNow = useCallback(
@@ -280,6 +297,12 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     },
     [prefs, runBidirectionalSync, prefsKey],
   )
+
+  useEffect(() => {
+    if (!serverCheckoutEnabled() || !prefs.enabled || !prefs.autoSync || !currentUser?.tenantId) return
+    const timer = window.setInterval(() => void runBidirectionalSync({silent:true}),30_000)
+    return () => window.clearInterval(timer)
+  },[prefs.enabled,prefs.autoSync,currentUser?.tenantId,runBidirectionalSync])
 
   const setAutoSync = useCallback((enabled: boolean) => {
     setPrefs((prev) => {

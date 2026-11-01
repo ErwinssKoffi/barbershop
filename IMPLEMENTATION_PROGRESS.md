@@ -232,3 +232,141 @@ Prochain lot : synchronisation delta serveur-autoritaire et autorisations par en
 - Les sorties manuelles Caissier sans recette et les mouvements positifs sont désormais refusés ; les retours/annulations doivent passer par un workflow Gérant à compléter. Un envoi contenant plusieurs tickets est intégralement annulé si l’un présente une erreur de stock.
 - La recherche d’attribution des consommables dans le journal JSON n’a pas encore d’index spécialisé ; rétention/compaction et mesures de charge restent nécessaires.
 - Prochain lot : commande ticket serveur unifiée, prix/variantes et paiements autoritaires, idempotence par commande et correction/restock traçable, puis E2E HTTPS multi-postes contre le serveur relié à Supabase.
+
+## Refonte guidée par le cahier cible — 31 octobre 2026 (lot 0 + début lot 1)
+
+- Original fourni conservé sans modification dans `docs/reference/SALON_PRO_Cahier_des_charges_et_plan_refonte.md`, empreinte SHA-256 consignée. Analyse du code comparée aux exigences, carte des flux/endpoints, écarts et portes de sortie dans `docs/ANALYSE_ECARTS_CAHIER_DES_CHARGES.md`.
+- Baseline réellement relancée sur `cecb99dc` : 118/118 tests, 23 fichiers ; schéma/lint/build/diff OK. Tag local de référence et compte rendu `docs/BASELINE_REFONTE.md`. L’ancien échec CI à l’étape tests reste ouvert ; pas de restauration Supabase ni de recette hébergée revendiquée.
+- README réaligné sur l’ERP coiffure/beauté, Supabase privé, Dexie partitionné, sessions révocables et delta. Suppression des instructions obsolètes LWW/Dexie v2/PIN/fournisseur unique Neon du parcours recommandé ; compatibilité des noms internes préservée.
+- Début **lot 1a** : `CheckoutCommand` et `CheckoutQuote`, validation stricte et devis commun serveur `POST /api/checkout/quote`. Catalogue/variantes/employés actifs tenant-scoped, entiers sûrs XOF, remises Gérant motivées et répartition exacte en BigInt, paiements nets/split/monnaie et caisse espèces ouverte, demande cumulée de stock produits+consommables standards.
+- Contrat et limites dans `docs/CHECKOUT_SERVEUR.md`. Endpoint authentifié/rate-limité, devis `quoted`/`confirmed:false`, sans écriture financière, reçu, réservation ou consommation de clé. Pas de migration distante ni de bascule trompeuse du formulaire sur une fausse finalisation de devis.
+- Transparence UI : « enregistré sur cet appareil » plutôt que « validé » après Dexie, note d’origine locale dans le ticket/reçu et référence locale indiquée sans modifier les valeurs historiques. Les vrais statuts par écriture et filtres de KPI restent à ajouter.
+- Sécurité : règle de commission service retirée des projections Caissier (snapshots/deltas) ; détails Gérant conservés. Un JSON `null` déjà parsé est désormais remis à la validation plutôt qu’attendre indéfiniment un corps déjà consommé.
+- 19 tests nouveaux de contrat/API/PostgreSQL et assertions UI/projection ajoutées. Validation complète finale : **137/137 tests, 24 fichiers**, schéma/lint/build/diff OK, consignée dans `docs/BASELINE_REFONTE.md`.
+- **Lot 1 non terminé** : persistance atomique de commande, idempotence de commit, reçu serveur, protection contre contournement par sync héritée, pending/confirmed Dexie et bascule des deux rôles constituent les prochaines étapes. P0 commercial toujours No-Go ; lots CRM/SaaS/paiement/agenda non commencés.
+
+## Refonte — lot 1b : finalisation transactionnelle (31 octobre 2026)
+
+- `POST /api/checkout/commit` implémenté pour les deux rôles : session individuelle, acteur relu, verrou tenant commun à sync, recalcul catalogue/remise/paiements/stock puis recettes, sorties, caisse et résultat persistés dans une seule transaction.
+- Registre tenant/clé + hash canonique + résultat immuable ; rejeu historique sans nouveaux effets, conflit de contenu/acteur explicite. Reçu `SPC-…` unique par salon, compteur annulé avec le rollback.
+- Métadonnées serveur et triggers de protection des recettes/mouvements confirmés ; sync refuse altérations, tombstones et faux liens de ticket/recette officiels. Caisse protégée contre suppression/réécriture du fond et totaux recalculés depuis le journal, y compris anciennes sessions de mouvements déplacés/supprimés.
+- Migration additive 006 **volontaire**, jamais lancée au démarrage ni par la CLI sans `--include-checkout` et approbation de sauvegarde/restauration vérifiées. Paquet Supabase local `supabase/optional/006_checkout.sql`, hors migrations automatiques. Une base 005 continue à synchroniser et refuse commit avec 503. **Aucun DDL distant exécuté, aucune sauvegarde/restauration revendiquée.**
+- Contrat, réponse, déploiement et rollback documentés dans `docs/CHECKOUT_SERVEUR.md`, matrice et README actualisés.
+- Validation complète : **147/147 tests, 25 fichiers**, schéma à jour, lint 0 erreur/avertissement, build et diff OK. Dix tests de plus depuis 1a : neuf scénarios commit PostgreSQL/API et un test d’opt-in migration. PostgreSQL embarqué mono-connexion : concurrence hébergée réelle toujours non prouvée. Avertissements non bloquants connus des graphiques en JSDOM et taille de chunk conservés.
+- **Lot 1 reste partiel / No-Go production** : formulaire et file Dexie non branchés, anciennes créations financières sous d’autres références toujours possibles, corrections inverses et snapshots historiques employés/commissions à compléter. Prochaine étape : file durable pending/confirmed/rejected et acquittement commun aux deux rôles, sans double création par la sync historique.
+
+## Refonte — lot 1c : outbox durable et formulaire pilote (31 octobre 2026)
+
+- Dexie v6 : intentions immuables séparées des projections financières, clés persistées, scopes compte/salon/rôle vérifiés, pending/confirmed/rejected, bail durable multi-onglets et réessais temporisés. Aucun débit local anticipé et aucune copie de la file vers un autre espace/rôle.
+- Validateur DTO pur partagé client/serveur, transport sous jeton fixe lié au compte (pas de retry 401 sous le compte suivant), timeout commit, contrôles de cohérence de l’ACK. L’acquittement ne réapplique pas des soldes historiques ni n’avance le curseur.
+- Formulaire commun Gérant/Caissier, panneau des intentions et reçu canonique intégrés en **pilote `VITE_SERVER_CHECKOUT=true` désactivé par défaut**. Prix catalogue, consommables standards serveur ; date rétroactive, saisie libre, notes et consommables manuels non proposés dans le pilote. Aucun fallback vers une vente locale après erreur serveur.
+- Sync préalable des changements locaux, traitement de la file, puis pull ordonné ; retry périodique si auto-sync actif, et bouton manuel. Les intentions pending n’entrent pas dans les KPI. Le cache financier peut rester en retard sur un ACK jusqu’au pull.
+- Clôture locale bloquée pour espèces pending/mouvements confirmés non chargés. Import/reset bloqués si issue inconnue ; les ACK restent conservés après reset. Catégories comptables service/produit corrigées et centralisées pour ne pas confondre catalogue et recettes.
+- **169/169 tests, 28 fichiers**, schéma, lint sans avertissement, build et diff OK. +22 tests : outbox/transport, deux parcours UI et intégration Dexie/API/PostgreSQL avec réponse perdue, autre vente et rejeu sans écraser le stock récent.
+- Aucun DDL Supabase distant, aucune activation de production ni backup/restore prouvé. Le JSON de sauvegarde métier exclut la file ; supervision/résolution opérateur et sauvegarde/reprise dédiées restent nécessaires. Anciens chemins financiers, corrections, snapshots historiques employés/commissions et recette HTTPS/multi-connexion restent ouverts : **No-Go maintenu**. Documentation README/contrat/analyse actualisée.
+
+## Refonte — lot 1d : supervision et reprise contrôlée (31 octobre 2026)
+
+- Nouvelle route `POST /api/checkout/status`, strictement key-only et authentifiée : lit le résultat canonique de l’acteur/tenant sans créer une vente pour une clé absente. Verrou tenant, appartenance active, refus d’accès aux résultats d’un autre acteur, aucune consommation de reçu/clé/révision métier.
+- Supervision locale dans le ticket : compteurs, filtres, pagination, vérification individuelle sous bail. Vérifier suspend sans renvoyer ; confirmation cohérente récupérée comme ACK, absence/non-conclusion conservée sans nouvelle vente. Historique local des contrôles/reprises, protections contre réponses tardives.
+- Export dédié des intentions non confirmées, sans secrets/baux/résultats. Restauration atomique et bornée (1 000 intentions / 5 Mo), scope vérifié, clés originales, conflits sans remplacement. Toute nouvelle intention restaurée reste pending/suspendue ; aucun ACK de fichier n’est cru et le worker ignore les suspensions.
+- Reprise explicite après lecture status not_found seulement pour une intention pending, avec confirmation utilisateur et même commande/clé. Refus métier existant non réactivé, pilote désactivé = pas de reprise UI ni envoi. Aucun bouton de suppression, annulation ou vente de remplacement.
+- Contrat, procédure opérateur et limites documentés. La sauvegarde métier reste distincte ; le fichier de file est privé, non chiffré/non signé et ne remplace pas la sauvegarde PostgreSQL.
+- **190/190 tests, 31 fichiers**, schéma/lint/build/diff OK ; 21 nouveaux tests API/RLS, récupération/backup et UI. Lint 0 avertissement ; notifications React act asynchrones non bloquantes dans les tests UI, graphiques JSDOM/chunk connus.
+- Aucun DDL distant, aucune activation de production ni restauration hébergée prouvée. Changement de rôle, supervision des autres acteurs, corrections et fermeture globale des anciens chemins financiers restent ouverts. **No-Go P0 maintenu** ; prochaine porte : prévol des backlogs/clients et politique serveur de bascule financière sans perdre les anciennes intentions.
+
+## Refonte — lot 1e : prévol et garde de bascule volontaire (31 octobre 2026)
+
+- Mode serveur `SALON_CHECKOUT_SYNC_MODE=legacy|enforced`, défaut legacy. Enforced requiert 006 et approbation explicite ; erreur de configuration/prérequis = refus fermé sans écritures.
+- Garde sous verrou tenant avant tout calcul/persist de sync : recettes historiques et effets de vente liés refusés, références inverses reconnues, no-ops/acquittements de tombstones connus préservés. Un refus annule **tout le push**, pour Gérant/Caissier et toute entrée passant par le moteur. Commit serveur reste le chemin d’écriture des nouvelles ventes.
+- `POST /api/checkout/preflight` authentifié et tenant-scoped, diagnostic sans création financière, IDs uniquement, borné. Prévol du client **avant tout pull**, stockage du dernier diagnostic et affichage dans le panneau ; backlog bloqué conservé, sans nouvelle clé ni remplacement automatique.
+- Après diagnostic enforced du scope : création/édition/archive locales de recettes héritées bloquées. Transport prévol/pull/push sous jeton capturé, sans retry sous un compte remplacé. Le nouveau client exige le prévol : déploiement client/serveur coordonné.
+- `.env.example` et contrat documentent les portes : tous salons/appareils/instances, sauvegardes/restauration prouvées, rapprochement des anciens tickets, migration volontaire et pilote, puis seulement approbation serveur. **Aucune activation hébergée, aucun DDL distant.**
+- Validation finale : **210/210 tests / 35 fichiers**, schéma/lint/build/diff OK ; +20 tests. Trois premières passes ont révélé des délais de démarrage SQL/lazy UI ; fixture WASM et module Dashboard préchauffés en setup, sans retrait d’assertion, réutilisation de données ou hausse des budgets d’assertion métier. Passe finale complète verte ; aucune conclusion sur la CI historique PR #2.
+- Ce mode ferme les écritures de **vente** héritées, pas tous les mouvements manuels caisse/inventaire ni dépenses/paie. Corrections inverses, vraie recette HTTPS/multi-postes, preuve de backup/restore hébergée et autres portes restent ouvertes. **No-Go maintenu.**
+
+### 31 octobre 2026 — Lot 2a : remboursements intégraux serveur
+
+- Commande Gérant active, motif obligatoire, clé stable, remboursement intégral unique par ticket canonique ; registres et écritures inverses immuables, reçu SPR et endpoint de statut.
+- Annulation atomique des recettes/paiements, espèces dans une caisse ouverte provisionnée ; retours produit explicitement sélectionnés au coût historique et CUMP pondéré. Aucun retour automatique des consommables.
+- Corrections des commissions fixes/unités signées et coût des produits retournés. Protection sync/SQL/RLS des inverses.
+- Migration 007 optionnelle PostgreSQL/Supabase privée, non appliquée à distance. CLI exige les deux attestations de sauvegarde pour 006+007 ; aucune activation ni déploiement.
+- **221/221 tests, 36 fichiers, 219,54 s** ; lint/build/schema/diff verts. Contrat et exclusions dans `docs/CHECKOUT_SERVEUR.md`.
+- Reste : UI et reprise offline remboursement, avoir imprimable, remboursements partiels, exécution prestataire. Références externes = attestations seulement. No-Go production maintenu.
+
+### 31 octobre 2026 — Lot 2b : interface et reprise remboursement
+
+- Interface Gérant sur les tickets confirmés de la file locale : motif, retours produits, caisse ouverte et références externes attestées.
+- Persistance Dexie atomique avant envoi, une intention/clé par ticket/espace ; confirmation explicite. Issue incertaine persistée avant réseau, vérification seule puis reprise manuelle avec la même clé après `not_found`.
+- Aucun rejeu automatique, changement de clé ni projection de snapshots financiers. Transport même origine/session capturée, validation des accusés, pilote désactivé par défaut.
+- **234/234 tests, 37 fichiers, 209,58 s** ; lint/build/schema/diff verts. 12 nouveaux tests UI/persistance/transport et 1 intégration Dexie → API/SQL après réponse perdue.
+- Restent : avoir imprimable, recherche serveur des tickets multi-postes, export/import de reprise remboursement, correction supervisée des intentions refusées, remboursement partiel et intégration prestataires. Suivi local non inclus dans la sauvegarde de file des ventes : ne pas effacer IndexedDB.
+- 007 toujours optionnelle et non appliquée à distance ; aucun déploiement ni activation. Production No-Go maintenue.
+
+### 31 octobre 2026 — Lot 2c : avoir imprimable confirmé
+
+- Ajout d'un document d'avoir dédié après confirmation du remboursement, avec références SPR/SPC, motif, acteur, lignes historiques, total et modes de remboursement. Avertissement explicite : paiements externes attestés, non exécutés/vérifiés.
+- Garde de cohérence des accusés locaux : scope/tenant/acteur/commande, signes, sommes et ventilations ; pas de fallback legacy ou d'avoir provisoire.
+- Portail d'impression isolé, formats 80 mm/A5 et réimpression sans mutation/API ; nettoyage après impression, erreur, fermeture et changement de compte.
+- **256/256 tests, 38 fichiers, 219,56 s** ; lint/build/schema/diff verts. 22 nouveaux tests ; intégrations reprise UI et API/SQL étendues jusqu'à l'éligibilité de l'avoir.
+- Impression simulée en JSDOM, rendu navigateur/papier réel non vérifié. Identité du salon issue de la configuration locale actuelle, pas d'un snapshot légal. Aucun DDL/deploiement/activation ; production No-Go inchangée.
+
+### 31 octobre 2026 — Lot 2d : sauvegarde/reprise des remboursements
+
+- Format dédié `SALON_PRO_REFUND_INTENTS_V1`, 5 Mio / 1 000 intentions, même Gérant/salon/rôle ; export des intentions sans accusés, états ou mouvements/secrets.
+- Import atomique, conflits de ticket/clé/contenu bloquants, états locaux existants préservés. Nouvelles intentions importées suspendues en vérification seule.
+- Panneau autonome dans la file, pagination et contrôle serveur sans renvoi ; récupération de l'avoir possible même sans vente dans la file de l'appareil cible.
+- Garde anti-réexécution depuis un fichier non signé : même `not_found` ne suffit pas à envoyer une intention importée. Contrôle canonique et reprise sous préconditions serveur restent nécessaires.
+- **278/278 tests, 39 fichiers, 215,99 s**, lint sans avertissement/erreur, build/schema/diff verts. 22 nouveaux tests ; intégration SQL/API étendue à la restauration sur second espace.
+- Fichier non chiffré/non signé ; ce n'est pas une sauvegarde PostgreSQL ni une preuve bancaire. Aucun DDL/deploiement/activation ; No-Go production maintenu.
+
+### 31 octobre 2026 — Lot 2e : reprise supervisée après contrôle canonique
+
+- Ajout des endpoints Gérant POST refund/review et refund/resume, isolés par tenant et soumis à la session active/rate limiting, sans nouvelle migration.
+- Contrôle financier en lecture seule des métadonnées importées contre le ticket canonique ; aperçu des lignes/modes historiques et empreinte de comparaison liée au tenant, acteur et commande.
+- Reprise UI explicitement confirmée, même clé/commande avec préconditions vérifiées sous verrou dans le moteur atomique ; droits, fonds, stock et unicité toujours revalidés.
+- Les intentions importées ne sont pas libérées globalement : absence serveur puis contrôle cohérent requis ; transport dédié /resume, jamais /refund natif. Statut après réponse perdue invalide l'ancien contrôle. Export toujours sans préconditions/accusés.
+- **294/294 tests, 39 fichiers, 232,60 s** ; lint/build/schema/diff verts, 16 tests ajoutés dont intégration sur second espace et récupération de réponse perdue.
+- Correction d'intention/caisse refusée, recherche générale multi-poste, remboursement partiel et prestataires restent à traiter. Aucun DDL/déploiement/activation ; No-Go production inchangé.
+
+### 31 octobre 2026 — Lot 2f : recherche serveur des tickets multi-postes
+
+- Panneau Gérant de recherche SPC exact et/ou intervalle UTC (366 jours max.), consultation des ventes canoniques de tous les comptes du salon, sans import local ni recherche automatique.
+- Endpoints POST history/search et history/detail : session/membership actives, RLS runtime, limites de débit, 006 requise. Pagination keyset 20 résultats avec précision microseconde, pas de total global.
+- Annotation des remboursements via 007 ; sans 007, suivi explicitement indisponible. Détail historique, accès au reçu et formulaire de préparation existant seulement si non remboursé. Aucun mouvement/envoi avant les étapes de confirmation existantes.
+- **317/317 tests, 41 fichiers, 247,22 s**, lint/build/schema/diff verts. 23 nouveaux tests API/SQL/UI/transport, incluant 22 tickets au même timestamp, isolation et préparation depuis un poste sans vente locale.
+- Restent : legacy/recherche client, recette de charge, corrections d'intention/changement de caisse, remboursement partiel et prestataires. Aucun DDL/déploiement/activation ; No-Go production maintenu.
+
+### 31 octobre 2026 — Exécution + lot 2g-a : diagnostic des blocages
+
+- Application démarrée en développement sur 0.0.0.0:4173 ; accueil HTTP 200. Health `ok:true`, `databaseConfigured:false` : UI disponible, connexion PostgreSQL d'exécution non configurée dans cet aperçu.
+- Diagnostic Gérant des intentions non confirmées : caisse absente/clôturée, journal/fonds insuffisants ou incohérents, produit/retour stock impossible. Endpoint authentifié et isolé, sans rapprochement persistant ni correction.
+- Affichage en mémoire, réponse vérifiée contre compte/commande ; aucune clé, commande, permission de reprise ou écriture financière modifiée.
+- **327/327 tests, 41 fichiers, 254,10 s**, lint/build/schema/diff verts. Dix nouveaux tests. Test de restauration stabilisé en attendant l'activation réelle du bouton avant clic ; assertions préservées.
+- La correction effective/changement de caisse reste à implémenter : ce lot n'en constitue que le premier sous-lot diagnostic. Aucun DDL/déploiement/activation ; No-Go production maintenu.
+
+### 31 octobre 2026 — Correction de configuration PostgreSQL (connexion externe encore requise)
+
+- Connecteur Supabase vérifié : BarberShop actif, migrations privées 001–005 présentes ; aucune écriture distante.
+- Correction du chargement des secrets serveur `.env.local` et variantes de mode dans Vite et les commandes DB, sans exposition client ni écrasement des variables de déploiement.
+- Ajout `npm run db:check` : requêtes READ ONLY, statuts sûrs sans secrets/erreurs brutes ; aucun schéma ou jeu de données créé.
+- **333/333 tests, 42 fichiers, 245,84 s**, lint/build/schema/diff verts. Six tests ajoutés sur les priorités, l'absence de configuration, les erreurs et les migrations en lecture seule.
+- Aperçu redémarré sur 4173. La vraie connexion Cloud n'est pas corrigée à elle seule par ce code : aucune URI privée n'est disponible au runtime et un environnement autorisant la sortie PostgreSQL est nécessaire. Ne pas demander de mot de passe en conversation, inventer une connexion ou contourner les restrictions réseau.
+- 006/007 non appliquées, aucune activation ; production No-Go inchangée.
+
+### 31 octobre 2026 — Configuration Vercel dédiée
+
+- Création et relecture du projet barbershop dans l'équipe connectée, sans lien Git ni déploiement automatique ; autres projets inchangés.
+- Build Vite / npm ci / dist configurés ; trois indicateurs de sécurité false/legacy/false créés pour les trois environnements.
+- Déclarations reproductibles dans vercel.json, région Dublin au futur déploiement, Node 22 dans package/lock ; liaison locale .vercel ignorée par Git.
+- SUPABASE_DATABASE_URL et SALON_AUTH_SECRET restent à saisir dans les paramètres privés Vercel ; aucune valeur inventée ni récupérée d'un projet tiers.
+- Lint/build/schema/diff verts, 7/7 tests ciblés configuration/sécurité. Suite complète 328/335, sept timeouts 5s (796,61 s), non entièrement verte ; aucun délai ou assertion modifié pour les masquer.
+- Code non publié, aucun déploiement/DDL/activation. Étapes restantes dans VERCEL_SETUP.md. Production No-Go maintenue.
+
+### 31 octobre 2026 — Reprise : fiabilisation des tests avant déploiement
+
+- Les sept timeouts de la configuration Vercel restent consignés dans le passage historique ci-dessus ; ils ne constituent plus le résultat actuel.
+- Un seul worker Vitest : évite la concurrence des moteurs PostgreSQL WASM et du hachage réel sur petit runner, sans modifier le délai de cinq secondes. Premier passage ciblé : 43/45, deux timeouts restants.
+- Séparation de trois vérifications de migrations absentes, auparavant couplées à la création d’une deuxième base dans les scénarios droits/isolation (historique, review et diagnostic). Pas de suppression d’assertions, de réutilisation de base entre tests ou de changement du code métier.
+- Validation finale : schema check, lint, **338/338 tests dans 43 fichiers** (383,38 s), build et diff check réussis. Journaux `.cache-vercel-resume-full-tests.log` et `.cache-vercel-resume-build.log` ; avertissement de taille des chunks non bloquant.
+- Aucun déploiement, publication Git, migration hébergée ou activation financière effectué. Les variables privées Vercel restent à renseigner, la recette Cloud et le backup/restore restent non vérifiés ; production No-Go.

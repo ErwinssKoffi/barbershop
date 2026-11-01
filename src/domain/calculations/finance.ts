@@ -266,6 +266,8 @@ export function calculateConsumedStockCost(
   for (const mv of stockMovements) {
     if (mv.type === 'use' || mv.type === 'sale' || mv.type === 'loss') {
       cost += Math.abs(mv.quantityDelta) * toIntFCFA(mv.unitCost)
+    } else if (mv.reversalOfStockMovementId && mv.type === 'adjustment' && mv.quantityDelta > 0) {
+      cost -= mv.quantityDelta * toIntFCFA(mv.unitCost)
     }
   }
   return toIntFCFA(cost)
@@ -397,8 +399,8 @@ export function calculateEmployeeCommission(
     if (override) {
       hasAnyCommission = true
       if (override.mode === 'fixed') {
-        const qty = Math.max(1, Math.round(r.quantity ?? 1))
-        exactCommission += toIntFCFA(override.value) * qty
+        const qty = Math.max(1, Math.abs(Math.round(r.quantity ?? 1)))
+        exactCommission += toIntFCFA(override.value) * qty * (r.reversalOfRevenueId ? -1 : 1)
       } else {
         exactCommission += (lineAmount * override.value) / 100
       }
@@ -444,10 +446,10 @@ export function calculateEmployeePerformanceSummary(
   for (const r of ownRevs) {
     const amt = toIntFCFA(r.amount)
     if (isProductSaleRevenue(r)) {
-      productsSoldCount += Math.max(1, r.quantity ?? 1)
+      productsSoldCount += Math.max(1, Math.abs(r.quantity ?? 1)) * (r.reversalOfRevenueId ? -1 : 1)
       productsRevenue += amt
     } else {
-      servicesCount += Math.max(1, r.quantity ?? 1)
+      servicesCount += Math.max(1, Math.abs(r.quantity ?? 1)) * (r.reversalOfRevenueId ? -1 : 1)
       servicesRevenue += amt
     }
   }

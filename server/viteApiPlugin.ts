@@ -1,4 +1,4 @@
-import 'dotenv/config'
+import { loadServerEnvironment } from './serverEnvironment.ts'
 import type { Plugin } from 'vite'
 import { handleSalonApiRequest } from './apiHandler.ts'
 
@@ -9,6 +9,9 @@ import { handleSalonApiRequest } from './apiHandler.ts'
 export function salonNeonApiPlugin(): Plugin {
   return {
     name: 'salon-pro-neon-api',
+    configResolved(config) {
+      if(config.envDir!==false) loadServerEnvironment({root:config.envDir,mode:config.mode})
+    },
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (!req.url?.startsWith('/api/')) {

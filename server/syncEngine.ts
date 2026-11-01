@@ -1,3 +1,5 @@
+import { enforceCheckoutCutover } from './checkoutCutover.ts'
+import { hasCheckoutSchema, isCheckoutSession, reconcileCheckoutCash } from './checkoutLedger.ts'
 import { planCashierStock, validateCashierStockLinks } from './cashierStock.ts'
 import { AuthApiError } from './authEngine.ts'
 import { lockSyncState, parseSyncCursor, prepareSync, readSyncDelta, type SyncDelta } from './syncProtocol.ts'
@@ -357,6 +359,7 @@ export async function syncWithNeonDatabase(
     const head = await lockSyncState(client)
     const since = parseSyncCursor(incoming.cursor)
     if (since !== undefined && since > head) throw new AuthApiError(409, 'CURSOR_AHEAD', 'Curseur de synchronisation en avance sur le serveur.')
+    await enforceCheckoutCutover(client,incoming)
     const stockPlan = role === 'cashier' ? await planCashierStock(client, incoming, syncedAt) : undefined
     const prepared = await prepareSync(client, stockPlan?.incoming ?? incoming, role, syncedAt)
     if (stockPlan) {
@@ -365,6 +368,16 @@ export async function syncWithNeonDatabase(
       prepared.payload.products = stockPlan.products
     }
     const p = prepared.payload
+    const checkoutReady = await hasCheckoutSchema(client)
+    const affectedCash = new Set([...(p.cashSessions ?? []).map((row) => row.id), ...(p.cashMovements ?? []).map((row) => row.sessionId)])
+    if (checkoutReady) {
+      // Capture old sessions before legacy edits/moves/deletes, not only their new session IDs.
+      const ids = [...(p.cashMovements ?? []).map((row) => row.id), ...prepared.tombstones.filter((row) => row.entityType === 'cash_movement').map((row) => row.entityId)]
+      if (ids.length) {
+        const old = await client.query<{session_id:string}>('SELECT session_id FROM cash_movements WHERE id = ANY($1::text[])',[ids])
+        for (const row of old.rows) affectedCash.add(row.session_id)
+      }
+    }
 
     // 1. SalonInfo (nettoyé de toute valeur fictive héritée)
     if (p.salon) {
@@ -870,6 +883,9 @@ export async function syncWithNeonDatabase(
       tombstonesApplied += delRes.rowCount ?? 0
     }
 
+    if (checkoutReady) {
+      for (const id of affectedCash) if (await isCheckoutSession(client, id)) await reconcileCheckoutCash(client,id,syncedAt)
+    }
     const count = await client.query<{ record_count: string | number }>('SELECT record_count FROM sync_state')
     const merged = since === undefined ? await readFullCloudState(client) : { payload: null, tombstones: [], totalRemoteRecords: Number(count.rows[0]?.record_count ?? 0) }
     const delta = await readSyncDelta(client, since ?? await lockSyncState(client), role)

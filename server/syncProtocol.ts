@@ -1,3 +1,4 @@
+import { hasCheckoutSchema, hasRefundSchema, isCheckoutRecord, isCheckoutSession } from './checkoutLedger.ts'
 import { AuthApiError } from './authEngine.ts'
 import type { SqlQueryable } from './neonClient.ts'
 import type { SalonBackupPayload, UserRole } from '../src/domain/models/index.ts'
@@ -25,6 +26,7 @@ const entityKeys: Record<string, SyncKey> = { service: 'services', employee: 'em
 
 export async function prepareSync(db: SqlQueryable, incoming: CloudSyncEnvelope, role: UserRole | undefined, now: string): Promise<{ payload: SalonBackupPayload; tombstones: SyncTombstone[]; rejected: SyncRejection[] }> {
  const cursor = parseSyncCursor(incoming.cursor)
+ const checkoutReady = await hasCheckoutSchema(db)
  const rejected: SyncRejection[] = []
  const payload: Record<string, unknown> = { format: 'SALON_PRO_BACKUP_V1', exportedAt: now }
  const tombstoneRows = await db.query<{ entity_type: string; entity_id: string }>('SELECT entity_type, entity_id FROM sync_tombstones')
@@ -55,6 +57,19 @@ export async function prepareSync(db: SqlQueryable, incoming: CloudSyncEnvelope,
     if (payroll && (!current || canonical(current) !== canonical(row))) { rejected.push({ table: key, id: row.id, code: 'WRITE_FORBIDDEN_FOR_ROLE' }); continue }
    }
    if (current && canonical(current) === canonical(row)) continue
+   if (checkoutReady) {
+    let finalized = await isCheckoutRecord(db, table, row.id)
+    if (key === 'revenues' && typeof row.receiptNumber === 'string' && /^(SPC|SPR)-/.test(row.receiptNumber)) finalized = true
+    if (key === 'revenues' && typeof row.ticketId === 'string') finalized ||= (await db.query('SELECT ticket_id FROM checkout_commands WHERE ticket_id = $1', [row.ticketId])).rows.length > 0
+    if (key === 'revenues' && typeof row.ticketId === 'string' && await hasRefundSchema(db)) finalized ||= (await db.query('SELECT refund_ticket_id FROM checkout_refunds WHERE refund_ticket_id=$1',[row.ticketId])).rows.length>0
+    if (typeof row.reversalOfRevenueId === 'string' || typeof row.reversalOfStockMovementId === 'string') finalized = true
+    if (typeof row.linkedRevenueId === 'string') finalized ||= await isCheckoutRecord(db, 'revenues', row.linkedRevenueId)
+    if (key === 'cashSessions' && current && await isCheckoutSession(db, row.id)) {
+      const old = current as Record<string, unknown>
+      if (row.openingBalance !== old.openingBalance || row.openedAt !== old.openedAt || (old.status === 'closed' && row.status !== 'closed')) finalized = true
+    }
+    if (finalized) { rejected.push({ table:key,id:row.id,code:'FINALIZED_CHECKOUT_RECORD' }); continue }
+   }
    let code: string | undefined
    if (deleted.has(`${key}:${row.id}`)) code = 'RECORD_DELETED'
    else if (current) {
@@ -73,6 +88,7 @@ export async function prepareSync(db: SqlQueryable, incoming: CloudSyncEnvelope,
   const key = entityKeys[item.entityType]
   if (!key || typeof item.entityId !== 'string') throw new AuthApiError(400, 'INVALID_PAYLOAD', 'Suppression de synchronisation invalide.')
   if (role === 'cashier') { rejected.push({ table: key, id: item.entityId, code: 'DELETE_FORBIDDEN_FOR_ROLE' }); continue }
+  if (checkoutReady && (await isCheckoutRecord(db, SYNC_TABLES[key], item.entityId) || (key === 'cashSessions' && await isCheckoutSession(db, item.entityId)))) { rejected.push({ table:key,id:item.entityId,code:'FINALIZED_CHECKOUT_RECORD' }); continue }
   if (deleted.has(`${key}:${item.entityId}`)) continue
   const rev = await db.query<{ seq: string | number | null }>('SELECT max(seq) AS seq FROM sync_changes WHERE table_name = $1 AND row_id = $2', [key, item.entityId])
   if (Number(rev.rows[0]?.seq ?? 0) > (cursor ?? -1)) {

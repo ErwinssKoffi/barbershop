@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { handleSalonApiRequest } from '../../server/apiHandler'
 import {
   hashPasswordNode,
@@ -21,6 +21,10 @@ import {
   hashPasswordPBKDF2,
   verifyPasswordPBKDF2,
 } from '../utils/passwordCrypto'
+
+// Authentication assertions measure account transitions, not the first Vite transform of Recharts.
+// Keep real lazy routes and all assertions; warm the dashboard module before the UI wait budget.
+beforeAll(async () => { await import('../features/dashboard/DashboardPage') })
 
 function createAuthMemoryPool(): SqlPoolLike {
   return createPostgresTestPool().pool

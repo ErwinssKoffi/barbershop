@@ -29,3 +29,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Liaison locale Vercel (pas de secrets ni de métadonnées de déploiement en Git)
+.vercel/

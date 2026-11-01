@@ -14,6 +14,9 @@ export default defineConfig({
     },
   },
   test: {
+    // PGlite/WASM + real password hashing are CPU-heavy: avoid competing workers
+    // on small CI runners. Keep isolated databases and the existing 5s test budget.
+    maxWorkers: 1,
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
